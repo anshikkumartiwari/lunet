@@ -43,8 +43,9 @@ class LunetNotificationListenerService : NotificationListenerService() {
             mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
             val component = ComponentName(this, LunetNotificationListenerService::class.java)
             mediaSessionManager?.addOnActiveSessionsChangedListener({ controllers ->
-                val active = controllers?.firstOrNull()
-                LunetApp.instance?.mediaBridge?.attachMediaController(active)
+                val playing = controllers?.firstOrNull { it.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING }
+                    ?: controllers?.firstOrNull()
+                LunetApp.instance?.mediaBridge?.attachMediaController(playing)
             }, component)
         } catch (e: Exception) {
             Log.e(tag, "Failed to register active media session listener: ${e.message}")
@@ -55,7 +56,9 @@ class LunetNotificationListenerService : NotificationListenerService() {
         try {
             val component = ComponentName(this, LunetNotificationListenerService::class.java)
             val controllers = mediaSessionManager?.getActiveSessions(component)
-            LunetApp.instance?.mediaBridge?.attachMediaController(controllers?.firstOrNull())
+            val playing = controllers?.firstOrNull { it.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING }
+                ?: controllers?.firstOrNull()
+            LunetApp.instance?.mediaBridge?.attachMediaController(playing)
         } catch (e: Exception) {
             Log.w(tag, "Error querying active sessions: ${e.message}")
         }
@@ -64,6 +67,18 @@ class LunetNotificationListenerService : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         if (sbn == null) return
         val pkg = sbn.packageName ?: return
+
+        // Media session token extraction fallback
+        val extras = sbn.notification?.extras
+        @Suppress("DEPRECATION")
+        val sessionToken = extras?.getParcelable<android.media.session.MediaSession.Token>(Notification.EXTRA_MEDIA_SESSION)
+        if (sessionToken != null) {
+            LunetApp.instance?.mediaBridge?.attachSessionToken(sessionToken)
+            LunetApp.instance?.mediaBridge?.updateFromNotificationExtras(
+                extras.getString(Notification.EXTRA_TITLE),
+                extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+            )
+        }
 
         // 1. Google Maps Navigation Stream Extractor
         if (pkg == "com.google.android.apps.maps") {
