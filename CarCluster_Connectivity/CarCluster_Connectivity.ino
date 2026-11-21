@@ -9,11 +9,16 @@
 #define LV_CONF_INCLUDE_SIMPLE
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 #include <time.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#if defined(CONFIG_BLUEDROID_ENABLED)
+#include <esp_gap_ble_api.h>
+#endif
 #include <esp_display_panel.hpp>
 #include <lvgl.h>
 #include <esp_timer.h>
@@ -22,6 +27,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 
 using namespace esp_panel::board;
 using namespace esp_panel::drivers;
@@ -74,7 +80,7 @@ using namespace esp_panel::drivers;
 #endif
 
 // -----------------------------------------------------------------------------
-// Safe Math & Formatting Helpers
+// Safe Math, Formatting & Icon Helpers
 // -----------------------------------------------------------------------------
 static inline int clampInt(int v, int lo, int hi) {
   return (v < lo) ? lo : ((v > hi) ? hi : v);
@@ -100,6 +106,29 @@ static void formatEta(char *buf, size_t len, int mins) {
   }
 }
 
+static const char *batterySymbolForPct(int pct) {
+  if (pct >= 85) return LV_SYMBOL_BATTERY_FULL;
+  if (pct >= 60) return LV_SYMBOL_BATTERY_3;
+  if (pct >= 35) return LV_SYMBOL_BATTERY_2;
+  if (pct >= 12) return LV_SYMBOL_BATTERY_1;
+  return LV_SYMBOL_BATTERY_EMPTY;
+}
+
+static const char *wmoCodeToText(int code) {
+  if (code == 0) return "Clear";
+  if (code == 1) return "Fair";
+  if (code == 2) return "Cloudy";
+  if (code == 3) return "Overcast";
+  if (code == 45 || code == 48) return "Fog";
+  if (code >= 51 && code <= 57) return "Drizzle";
+  if (code >= 61 && code <= 67) return "Rain";
+  if (code >= 71 && code <= 77) return "Snow";
+  if (code >= 80 && code <= 82) return "Showers";
+  if (code == 85 || code == 86) return "Snow";
+  if (code >= 95 && code <= 99) return "Storm";
+  return "Clear";
+}
+
 static void setLabelIfChanged(lv_obj_t *lbl, const char *text) {
   if (!lbl || !text) return;
   const char *cur = lv_label_get_text(lbl);
@@ -108,8 +137,52 @@ static void setLabelIfChanged(lv_obj_t *lbl, const char *text) {
   }
 }
 
+// Lightweight JSON extractors (zero external dependencies)
+static bool jsonExtractFloat(const char *json, const char *key, float *outVal) {
+  if (!json || !key || !outVal) return false;
+  const char *p = strstr(json, key);
+  if (!p) return false;
+  p += strlen(key);
+  while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+  char *endPtr = nullptr;
+  float v = strtof(p, &endPtr);
+  if (endPtr == p) return false;
+  *outVal = v;
+  return true;
+}
+
+static bool jsonExtractInt(const char *json, const char *key, int *outVal) {
+  if (!json || !key || !outVal) return false;
+  const char *p = strstr(json, key);
+  if (!p) return false;
+  p += strlen(key);
+  while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+  char *endPtr = nullptr;
+  long v = strtol(p, &endPtr, 10);
+  if (endPtr == p) return false;
+  *outVal = (int)v;
+  return true;
+}
+
+static bool jsonExtractString(const char *json, const char *key, char *outBuf, size_t maxLen) {
+  if (!json || !key || !outBuf || maxLen < 2) return false;
+  const char *p = strstr(json, key);
+  if (!p) return false;
+  p += strlen(key);
+  while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+  if (*p != '"') return false;
+  p++;
+  size_t i = 0;
+  while (*p && *p != '"' && i < maxLen - 1) {
+    if (*p == '\\' && *(p + 1)) p++;
+    outBuf[i++] = *p++;
+  }
+  outBuf[i] = '\0';
+  return (i > 0);
+}
+
 // -----------------------------------------------------------------------------
-// Shared BLE 5.0 Protocol Constants (Matches Kotlin Companion App)
+// Shared BLE 5.0 Protocol & Default Network Constants
 // -----------------------------------------------------------------------------
 static const char *BLE_DEVICE_NAME  = "Visteon-Lunet";
 static const char *BLE_SERVICE_UUID = "7b5c0001-7b7c-4f2a-9a6d-2c0c0e4a1000";
@@ -117,6 +190,11 @@ static const char *BLE_CHAR_UUID    = "7b5c0002-7b7c-4f2a-9a6d-2c0c0e4a1000";
 
 static const char *SAVED_SSID       = "Anshik";
 static const char *SAVED_PASSWORD   = "anshik.ti";
+
+static constexpr float DEFAULT_LAT           = 13.110721f;
+static constexpr float DEFAULT_LON           = 80.245900f;
+static constexpr int   DEFAULT_UTC_OFFSET_S  = 19800; // IST (+05:30)
+static constexpr uint32_t WEATHER_REFRESH_MS = 15UL * 60UL * 1000UL; // 15 min
 
 // -----------------------------------------------------------------------------
 // Design System Palette (Obsidian Dark / Ceramic Light + Visteon Orange)
@@ -164,14 +242,17 @@ static lv_color_t *drawBuffer1 = nullptr;
 static lv_color_t *drawBuffer2 = nullptr;
 static esp_timer_handle_t lvglTickTimer = nullptr;
 
-// BLE State & Thread-Safe 24-Slot Ring Queue (Handles Initial Burst Sync Cleanly)
+// BLE State & Thread-Safe 24-Slot Ring Queue
 static bool bleReady = false;
 static volatile bool bleConnected = false;
 static volatile bool bleRestartPending = false;
 static volatile bool bleSyncReqPending = false;
+static volatile uint16_t bleActiveConnId = 0;
+static volatile bool blePeerAddrValid = false;
+static uint8_t blePeerAddr[6] = {0};
 static uint32_t bleDisconnectAt = 0;
 static uint32_t bleConnectedAt  = 0;
-static BLEServer *bleServer = nullptr;
+static BLEServer         *bleServer         = nullptr;
 static BLECharacteristic *bleCharacteristic = nullptr;
 
 static constexpr uint8_t BLE_QUEUE_SIZE = 24;
@@ -182,10 +263,10 @@ static volatile uint8_t bleQHead  = 0;
 static volatile uint8_t bleQTail  = 0;
 static volatile uint8_t bleQCount = 0;
 
-// Wi-Fi & NTP State
+// Wi-Fi, NTP & Standalone Open-Meteo / IP-Geo Background Sync State
 static bool wifiScanInProgress = false;
-static bool ntpConfigured = false;
-static bool bleTimeOverride = false;
+static bool ntpConfigured      = false;
+static bool bleTimeOverride    = false;
 static char activeWifiName[33] = "";
 
 struct WifiEntry {
@@ -196,6 +277,27 @@ struct WifiEntry {
 static WifiEntry scannedWifi[16];
 static uint8_t scannedWifiCount = 0;
 static char pendingWifiSsid[33] = "";
+
+struct NetSyncData {
+  bool  weatherOk;
+  bool  locationOk;
+  float lat;
+  float lon;
+  int   utcOffsetSec;
+  float tempC;
+  int   weatherCode;
+  char  city[28];
+  char  weatherStr[32];
+  char  isoTime[24];
+};
+
+static portMUX_TYPE netSyncMux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool netSyncRunning    = false;
+static volatile bool netSyncResultReady = false;
+static NetSyncData   netSyncResult     = {};
+static bool          weatherEverSynced = false;
+static uint32_t      lastWeatherSyncMs = 0;
+static bool          manualLocOverride = false;
 
 // -----------------------------------------------------------------------------
 // Automotive & Infotainment State (Boots in PARK, 0 km/h, DEMO OFF)
@@ -266,9 +368,13 @@ struct VehicleState {
   bool  defrostOn      = false;
   int   seatHeat       = 0;
 
-  // Phone Sync & Dynamic Alert
-  char  timeStr[16]    = "12:00 PM";
-  char  dateStr[24]    = "Sat, 21 Nov";
+  // Location, Time, Weather & Power
+  float latitude       = DEFAULT_LAT;
+  float longitude      = DEFAULT_LON;
+  int   utcOffsetSec   = DEFAULT_UTC_OFFSET_S;
+  char  cityStr[28]    = "Chennai";
+  char  timeStr[16]    = "--:--";
+  char  dateStr[24]    = "Syncing Time";
   char  weatherStr[32] = "Weather --";
   int   supplyBattery  = 100;   // Direct power supply = 100%
   int   phoneBattery   = -1;    // Synced via PBATT:<0-100>
@@ -481,6 +587,8 @@ static void startWifiConnection(const char *ssid, const char *password);
 static void scanWifiNetworks();
 static void updateWifiScanResults();
 static void restartBleAdvertising();
+static void triggerStandaloneWeatherSync();
+static void applyStandaloneNetSyncResult();
 
 static inline uint32_t modeAccentColor() {
   if (vs.mode == MODE_ECO) return pal().green;
@@ -497,10 +605,191 @@ static inline int displayLimit() {
 }
 
 // -----------------------------------------------------------------------------
+// Standalone Wi-Fi Location + Open-Meteo Weather + Timezone Sync (FreeRTOS)
+// -----------------------------------------------------------------------------
+static void netWeatherTask(void *param) {
+  NetSyncData local = {};
+  local.lat          = vs.latitude;
+  local.lon          = vs.longitude;
+  local.utcOffsetSec = vs.utcOffsetSec;
+  strncpy(local.city, vs.cityStr, sizeof(local.city) - 1);
+
+  // Step 1: Auto-detect lat/lon/city/timezone via IP geolocation (unless phone sent exact GPS)
+  if (!manualLocOverride && WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.setTimeout(5000);
+    http.setReuse(false);
+    if (http.begin("http://ip-api.com/json/?fields=status,lat,lon,city,offset")) {
+      int code = http.GET();
+      if (code == HTTP_CODE_OK) {
+        String body = http.getString();
+        const char *js = body.c_str();
+        float latVal = 0.0f, lonVal = 0.0f;
+        int offVal = 0;
+        if (jsonExtractFloat(js, "\"lat\":", &latVal) &&
+            jsonExtractFloat(js, "\"lon\":", &lonVal)) {
+          local.lat = latVal;
+          local.lon = lonVal;
+          local.locationOk = true;
+        }
+        if (jsonExtractInt(js, "\"offset\":", &offVal)) {
+          local.utcOffsetSec = offVal;
+        }
+        char cityBuf[28] = "";
+        if (jsonExtractString(js, "\"city\":", cityBuf, sizeof(cityBuf))) {
+          strncpy(local.city, cityBuf, sizeof(local.city) - 1);
+          local.city[sizeof(local.city) - 1] = '\0';
+        }
+      }
+      http.end();
+    }
+  }
+
+  // Step 2: Fetch live weather & timezone from Open-Meteo
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(7);
+
+    char url[200];
+    snprintf(url, sizeof(url),
+             "https://api.open-meteo.com/v1/forecast?latitude=%.6f&longitude=%.6f"
+             "&current=temperature_2m,weather_code&timezone=auto",
+             local.lat, local.lon);
+
+    HTTPClient https;
+    https.setTimeout(7000);
+    https.setReuse(false);
+    if (https.begin(client, url)) {
+      int code = https.GET();
+      if (code == HTTP_CODE_OK) {
+        String body = https.getString();
+        const char *js = body.c_str();
+
+        int omOffset = 0;
+        if (jsonExtractInt(js, "\"utc_offset_seconds\":", &omOffset)) {
+          local.utcOffsetSec = omOffset;
+        }
+
+        // Jump past "current_units" straight into the "current":{...} object
+        const char *curObj = strstr(js, "\"current\":");
+        if (curObj) {
+          curObj = strchr(curObj, '{');
+        }
+        if (curObj) {
+          float tempVal = 0.0f;
+          int wmoCode = 0;
+          bool hasTemp = jsonExtractFloat(curObj, "\"temperature_2m\":", &tempVal);
+          bool hasCode = jsonExtractInt(curObj, "\"weather_code\":", &wmoCode);
+          jsonExtractString(curObj, "\"time\":", local.isoTime, sizeof(local.isoTime));
+
+          if (hasTemp) {
+            local.tempC       = tempVal;
+            local.weatherCode = hasCode ? wmoCode : 0;
+            snprintf(local.weatherStr, sizeof(local.weatherStr), "%dC %s",
+                     (int)lroundf(tempVal), wmoCodeToText(local.weatherCode));
+            local.weatherOk = true;
+          }
+        }
+      }
+      https.end();
+    }
+  }
+
+  portENTER_CRITICAL(&netSyncMux);
+  netSyncResult      = local;
+  netSyncResultReady = true;
+  netSyncRunning     = false;
+  portEXIT_CRITICAL(&netSyncMux);
+
+  vTaskDelete(nullptr);
+}
+
+static void triggerStandaloneWeatherSync() {
+  if (netSyncRunning || WiFi.status() != WL_CONNECTED) return;
+  netSyncRunning    = true;
+  lastWeatherSyncMs = millis();
+
+  BaseType_t ok = xTaskCreatePinnedToCore(
+      netWeatherTask, "net_weather", 8192, nullptr, 1, nullptr, 0);
+  if (ok != pdPASS) {
+    netSyncRunning = false;
+    Serial.println("[NET] Failed to start Open-Meteo sync task");
+  }
+}
+
+static void applyIsoFallbackClock(const char *iso) {
+  if (!iso || !iso[0]) return;
+  int yr = 0, mo = 0, dy = 0, hr = 0, mn = 0;
+  if (sscanf(iso, "%d-%d-%dT%d:%d", &yr, &mo, &dy, &hr, &mn) != 5) return;
+
+  int h12 = hr % 12;
+  if (h12 == 0) h12 = 12;
+  snprintf(vs.timeStr, sizeof(vs.timeStr), "%02d:%02d %s", h12, mn, (hr >= 12) ? "PM" : "AM");
+
+  static const char *monNames[12] = {
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+  };
+  struct tm t = {};
+  t.tm_year = yr - 1900;
+  t.tm_mon  = clampInt(mo - 1, 0, 11);
+  t.tm_mday = clampInt(dy, 1, 31);
+  t.tm_hour = clampInt(hr, 0, 23);
+  t.tm_min  = clampInt(mn, 0, 59);
+  mktime(&t);
+  static const char *dowNames[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  snprintf(vs.dateStr, sizeof(vs.dateStr), "%s, %02d %s",
+           dowNames[clampInt(t.tm_wday, 0, 6)],
+           t.tm_mday,
+           monNames[clampInt(t.tm_mon, 0, 11)]);
+}
+
+static void applyStandaloneNetSyncResult() {
+  if (!netSyncResultReady) return;
+
+  NetSyncData local = {};
+  portENTER_CRITICAL(&netSyncMux);
+  local = netSyncResult;
+  netSyncResultReady = false;
+  portEXIT_CRITICAL(&netSyncMux);
+
+  bool tzChanged = (local.utcOffsetSec != vs.utcOffsetSec);
+  vs.latitude     = local.lat;
+  vs.longitude    = local.lon;
+  vs.utcOffsetSec = local.utcOffsetSec;
+  if (local.city[0]) {
+    strncpy(vs.cityStr, local.city, sizeof(vs.cityStr) - 1);
+    vs.cityStr[sizeof(vs.cityStr) - 1] = '\0';
+  }
+
+  if (!ntpConfigured || tzChanged) {
+    configTime(vs.utcOffsetSec, 0, "pool.ntp.org", "time.nist.gov");
+    ntpConfigured = true;
+  }
+
+  if (local.weatherOk) {
+    weatherEverSynced = true;
+    strncpy(vs.weatherStr, local.weatherStr, sizeof(vs.weatherStr) - 1);
+    vs.weatherStr[sizeof(vs.weatherStr) - 1] = '\0';
+
+    // Use Open-Meteo local timestamp immediately if NTP & BLE haven't set the clock yet
+    struct tm ti;
+    if (!bleTimeOverride && !getLocalTime(&ti, 0) && local.isoTime[0]) {
+      applyIsoFallbackClock(local.isoTime);
+    }
+
+    char msg[76];
+    snprintf(msg, sizeof(msg), "%s: %s (%.2f, %.2f)",
+             vs.cityStr, vs.weatherStr, vs.latitude, vs.longitude);
+    appendBleLog("NET", msg);
+    Serial.printf("[NET] Synced %s\n", msg);
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Custom Vector Renderers (Anti-Aliased LVGL 8.4 — Zero Extra Flash/RAM)
 // -----------------------------------------------------------------------------
-
-// Exact geometric vector reconstruction of Visteon logo (#F37B20)
 static void drawVisteonLogoCb(lv_event_t *e) {
   lv_obj_t *obj = lv_event_get_target(e);
   lv_draw_ctx_t *drawCtx = lv_event_get_draw_ctx(e);
@@ -533,7 +822,6 @@ static void drawVisteonLogoCb(lv_event_t *e) {
   lv_draw_polygon(drawCtx, &polyDsc, rightWedge, 3);
 }
 
-// Icon-Only Theme Toggle (Sun in Dark Mode, Crescent Moon in Light Mode)
 static void drawThemeIconCb(lv_event_t *e) {
   lv_obj_t *obj = lv_event_get_target(e);
   lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(e);
@@ -592,7 +880,6 @@ static void drawThemeIconCb(lv_event_t *e) {
   }
 }
 
-// Vector Turn-by-Turn Navigation Arrow (Scales smoothly for Mini & Large HUD)
 static void drawNavArrowCb(lv_event_t *e) {
   lv_obj_t *obj = lv_event_get_target(e);
   lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(e);
@@ -609,7 +896,6 @@ static void drawNavArrowCb(lv_event_t *e) {
   uint32_t col = vs.navActive ? pal().green : pal().muted;
 
   if (!vs.navActive) {
-    // Clean Idle Navigation Compass Pointer
     lv_draw_rect_dsc_t triDsc;
     lv_draw_rect_dsc_init(&triDsc);
     triDsc.bg_color = lv_color_hex(col);
@@ -698,7 +984,6 @@ static void drawNavArrowCb(lv_event_t *e) {
   }
 }
 
-// Live 3D-Perspective ADAS Road, Lane Keep Assist, Radar & Ego EV Canvas
 static void drawAdasCanvasCb(lv_event_t *e) {
   lv_obj_t *obj = lv_event_get_target(e);
   lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(e);
@@ -872,7 +1157,6 @@ static void drawAdasCanvasCb(lv_event_t *e) {
   }
 }
 
-// Media Vinyl / Album Art Disc
 static void drawMediaDiscCb(lv_event_t *e) {
   lv_obj_t *obj = lv_event_get_target(e);
   lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(e);
@@ -922,7 +1206,6 @@ static void drawMediaDiscCb(lv_event_t *e) {
   lv_draw_rect(ctx, &hub, &spindle);
 }
 
-// Live 12-Bar Audio Spectrum Visualizer
 static void drawMediaEqCb(lv_event_t *e) {
   lv_obj_t *obj = lv_event_get_target(e);
   lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(e);
@@ -949,7 +1232,6 @@ static void drawMediaEqCb(lv_event_t *e) {
   }
 }
 
-// Top-Down EV Chassis & TPMS Blueprint
 static void drawVehicleChassisCb(lv_event_t *e) {
   lv_obj_t *obj = lv_event_get_target(e);
   lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(e);
@@ -1636,9 +1918,14 @@ static void buildPageDrive() {
     sendBlePacket("CMD:MEDIA:NEXT");
   });
 
-  // Right Bottom: EV Energy & Drive Modes
+  // Right Bottom: EV Energy & Drive Modes (Battery Icon)
   lv_obj_t *evCard = makeCard(pageContainer, 534, 252, 254, 116);
-  drvSocLbl = makeLabel(evCard, LV_SYMBOL_CHARGE " 84%   |   412 km", FONT_SM, pal().text, 14, 10);
+  char socInit[40];
+  snprintf(socInit, sizeof(socInit), "%s %d%%   |   %d %s",
+           batterySymbolForPct((int)vs.socPercent), (int)vs.socPercent,
+           vs.useMph ? (int)(vs.socPercent * 4.9f * 0.621f) : (int)(vs.socPercent * 4.9f),
+           vs.useMph ? "mi" : "km");
+  drvSocLbl = makeLabel(evCard, socInit, FONT_SM, pal().text, 14, 10);
 
   drvSocBar = lv_bar_create(evCard);
   lv_obj_set_pos(drvSocBar, 14, 34);
@@ -1809,9 +2096,12 @@ static void refreshNavCallCard() {
   }
 
   if (navPhoneBattLbl) {
-    char bBuf[20];
-    if (vs.phoneBattery >= 0) snprintf(bBuf, sizeof(bBuf), "Phone: %d%%", vs.phoneBattery);
-    else                      snprintf(bBuf, sizeof(bBuf), "Phone: --");
+    char bBuf[24];
+    if (vs.phoneBattery >= 0) {
+      snprintf(bBuf, sizeof(bBuf), "%s %d%%", batterySymbolForPct(vs.phoneBattery), vs.phoneBattery);
+    } else {
+      snprintf(bBuf, sizeof(bBuf), "Phone: --");
+    }
     setLabelIfChanged(navPhoneBattLbl, bBuf);
   }
 
@@ -1890,13 +2180,13 @@ static void buildPageNav() {
   // Right Top: Reactive Incoming Call & Hands-Free Loudspeaker Card
   navCallCard = makeCard(pageContainer, 474, 6, 314, 152);
   navCallStatusLbl = makeLabel(navCallCard, "HANDS-FREE CALLS", FONT_XS, pal().cyan, 14, 12);
-  navPhoneBattLbl  = makeLabel(navCallCard, "Phone: --", FONT_XS, pal().muted, 208, 12, 92);
+  navPhoneBattLbl  = makeLabel(navCallCard, "Phone: --", FONT_XS, pal().muted, 196, 12, 104);
   lv_obj_set_style_text_align(navPhoneBattLbl, LV_TEXT_ALIGN_RIGHT, 0);
 
   navCallerLbl  = makeLabel(navCallCard, "Ready for Phone Calls", FONT_LG, pal().text, 14, 36, 286);
   navCallSubLbl = makeLabel(navCallCard, "BLE Call Monitor Active", FONT_XS, pal().muted, 14, 66, 286);
 
-navAcceptBtn = makeBtn(navCallCard, LV_SYMBOL_CALL " ACCEPT", 12, 94, 88, 44, [](lv_event_t *e) {
+  navAcceptBtn = makeBtn(navCallCard, LV_SYMBOL_CALL " ACCEPT", 12, 94, 88, 44, [](lv_event_t *e) {
     vs.callActive   = true;
     vs.callAnswered = true;
     vs.callSpeaker  = false;
@@ -1908,6 +2198,7 @@ navAcceptBtn = makeBtn(navCallCard, LV_SYMBOL_CALL " ACCEPT", 12, 94, 88, 44, []
 
   navSpeakerBtn = makeBtn(navCallCard, LV_SYMBOL_VOLUME_MAX " SPEAKER", 106, 94, 108, 44, [](lv_event_t *e) {
     if (!vs.callAnswered) {
+      // Answer incoming call directly on loudspeaker
       vs.callActive   = true;
       vs.callAnswered = true;
       vs.callSpeaker  = true;
@@ -1915,6 +2206,7 @@ navAcceptBtn = makeBtn(navCallCard, LV_SYMBOL_CALL " ACCEPT", 12, 94, 88, 44, []
       sendBlePacket("CMD:CALL:ACCEPT_SPEAKER");
       triggerAlert("ANSWERING ON LOUDSPEAKER...", pal().cyan, 2800);
     } else {
+      // Toggle loudspeaker mid-call
       vs.callSpeaker = !vs.callSpeaker;
       vs.callDirty   = true;
       sendBlePacket(vs.callSpeaker ? "CMD:CALL:SPEAKER:ON" : "CMD:CALL:SPEAKER:OFF");
@@ -2236,7 +2528,7 @@ static void buildPageVehicle() {
   });
 
   lv_obj_t *hvCard = makeCard(pageContainer, 408, 238, 380, 130);
-  makeLabel(hvCard, LV_SYMBOL_CHARGE "  HV POWERTRAIN & THERMAL", FONT_XS, pal().green, 16, 12);
+  makeLabel(hvCard, LV_SYMBOL_BATTERY_FULL "  HV POWERTRAIN & THERMAL", FONT_XS, pal().green, 16, 12);
   vehHvStatsLbl = makeLabel(hvCard, "Pack: 398.4 V   |   Temp: 31 C   |   SOH: 99%\nOdometer: 12480.4 km   |   Trip A: 48.6 km",
                             FONT_SM, pal().text, 16, 36);
   vehRegenBtn = makeBtn(hvCard, "REGEN: STD", 16, 82, 170, 36, [](lv_event_t *e) {
@@ -2308,13 +2600,22 @@ static void buildPageConnect() {
   conWifiStatusLbl = makeLabel(wifiCard, LV_SYMBOL_WIFI "  WI-FI MANAGER", FONT_MD, pal().cyan, 16, 12);
   conWifiDetailLbl = makeLabel(wifiCard, "Checking radio...", FONT_XS, pal().muted, 16, 38, 352);
 
-  makeBtn(wifiCard, "CONNECT ANSHIK", 16, 66, 174, 38, [](lv_event_t *e) {
+  makeBtn(wifiCard, "CONNECT ANSHIK", 16, 66, 138, 38, [](lv_event_t *e) {
     startWifiConnection(SAVED_SSID, SAVED_PASSWORD);
   }, nullptr, VISTEON_ORANGE, 0x06090F);
 
-  makeBtn(wifiCard, LV_SYMBOL_REFRESH "  SCAN 2.4G", 198, 66, 170, 38, [](lv_event_t *e) {
+  makeBtn(wifiCard, LV_SYMBOL_REFRESH " SCAN", 160, 66, 98, 38, [](lv_event_t *e) {
     scanWifiNetworks();
   });
+
+  makeBtn(wifiCard, "SYNC METEO", 264, 66, 104, 38, [](lv_event_t *e) {
+    if (WiFi.status() == WL_CONNECTED) {
+      triggerStandaloneWeatherSync();
+      triggerAlert("SYNCING LOCATION & WEATHER...", pal().cyan, 2500);
+    } else {
+      triggerAlert("CONNECT WI-FI FIRST", pal().amber, 2200);
+    }
+  }, nullptr, pal().cyan, 0x06090F);
 
   conWifiList = lv_obj_create(wifiCard);
   lv_obj_set_pos(conWifiList, 16, 114);
@@ -2324,7 +2625,7 @@ static void buildPageConnect() {
   lv_obj_set_style_border_color(conWifiList, lv_color_hex(pal().border), 0);
   lv_obj_set_style_radius(conWifiList, 10, 0);
   lv_obj_set_style_pad_all(conWifiList, 6, 0);
-  makeLabel(conWifiList, "Tap SCAN 2.4G to discover networks.\nTap any SSID to enter password.", FONT_XS, pal().muted, 8, 8);
+  makeLabel(conWifiList, "Tap SCAN to discover 2.4 GHz networks.\nTap SYNC METEO to refresh location & weather.", FONT_XS, pal().muted, 8, 8);
 
   lv_obj_t *bleCard = makeCard(pageContainer, 406, 6, 382, 362);
   conBleStatusLbl = makeLabel(bleCard, bleConnected ? LV_SYMBOL_BLUETOOTH "  PHONE CONNECTED" : LV_SYMBOL_BLUETOOTH "  ADVERTISING: Visteon-Lunet",
@@ -2487,7 +2788,7 @@ static void buildShell() {
   }, LV_EVENT_CLICKED, nullptr);
 
   dynamicPillLabel = lv_label_create(dynamicPill);
-  lv_label_set_text(dynamicPillLabel, "12:00 PM   |   Sat, 21 Nov   |   Weather --");
+  lv_label_set_text(dynamicPillLabel, "--:--   |   Syncing Time   |   Weather --");
   lv_obj_set_style_text_font(dynamicPillLabel, FONT_SM, 0);
   lv_obj_set_style_text_color(dynamicPillLabel, lv_color_hex(pal().text), 0);
   lv_obj_set_width(dynamicPillLabel, 376);
@@ -2495,9 +2796,9 @@ static void buildShell() {
   lv_label_set_long_mode(dynamicPillLabel, LV_LABEL_LONG_DOT);
   lv_obj_center(dynamicPillLabel);
 
-  topWifiIcon    = makeLabel(topBar, LV_SYMBOL_WIFI, FONT_SM, pal().muted, 610, 15);
-  topBleIcon     = makeLabel(topBar, LV_SYMBOL_BLUETOOTH, FONT_SM, pal().cyan, 636, 15);
-  topSupplyLabel = makeLabel(topBar, LV_SYMBOL_CHARGE " 100%", FONT_XS, pal().green, 658, 16);
+  topWifiIcon    = makeLabel(topBar, LV_SYMBOL_WIFI, FONT_SM, pal().muted, 608, 15);
+  topBleIcon     = makeLabel(topBar, LV_SYMBOL_BLUETOOTH, FONT_SM, pal().cyan, 634, 15);
+  topSupplyLabel = makeLabel(topBar, LV_SYMBOL_BATTERY_FULL " 100%", FONT_XS, pal().green, 656, 16);
 
   lv_obj_t *themeIconBtn = makeBtn(topBar, "", 744, 7, 42, 32, [](lv_event_t *e) {
     lightTheme = !lightTheme;
@@ -2516,7 +2817,7 @@ static void buildShell() {
     LV_SYMBOL_HOME " DRIVE",
     LV_SYMBOL_GPS " NAV",
     LV_SYMBOL_AUDIO " MEDIA",
-    LV_SYMBOL_CHARGE " VEHICLE",
+    LV_SYMBOL_BATTERY_FULL " VEHICLE",
     LV_SYMBOL_WIFI " CONNECT",
     LV_SYMBOL_SETTINGS " SYSTEM"
   };
@@ -2579,22 +2880,36 @@ static bool dequeueBleRx(char *outBuf, size_t maxLen) {
 }
 
 class LunetServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer *server) override {
-    bleConnected = true;
+#if defined(CONFIG_BLUEDROID_ENABLED)
+  void onConnect(BLEServer *server, esp_ble_gatts_cb_param_t *param) override {
+    bleConnected      = true;
     bleRestartPending = false;
     bleSyncReqPending = true;
-    bleConnectedAt = millis();
-    Serial.println("[BLE] Companion app connected");
-    appendBleLog("SYS", "Phone connected");
+    bleConnectedAt    = millis();
+    bleActiveConnId   = param ? param->connect.conn_id : server->getConnId();
+    if (param) {
+      memcpy(blePeerAddr, param->connect.remote_bda, 6);
+      blePeerAddrValid = true;
+    }
+    Serial.printf("[BLE] Companion app connected (connId=%u)\n", (unsigned)bleActiveConnId);
   }
+#else
+  void onConnect(BLEServer *server) override {
+    bleConnected      = true;
+    bleRestartPending = false;
+    bleSyncReqPending = true;
+    bleConnectedAt    = millis();
+    bleActiveConnId   = server->getConnId();
+    Serial.printf("[BLE] Companion app connected (connId=%u)\n", (unsigned)bleActiveConnId);
+  }
+#endif
   void onDisconnect(BLEServer *server) override {
-    bleConnected = false;
+    bleConnected      = false;
     bleSyncReqPending = false;
     bleRestartPending = true;
-    bleDisconnectAt = millis();
+    blePeerAddrValid  = false;
+    bleDisconnectAt   = millis();
     Serial.println("[BLE] Companion app disconnected");
-    appendBleLog("SYS", "Phone disconnected");
-    BLEDevice::startAdvertising();
   }
 };
 
@@ -2646,30 +2961,44 @@ static void startBle() {
   appendBleLog("SYS", "BLE 5.0 Active (MTU 247)");
 }
 
+// Force-disconnects any active phone session and cleanly restarts BLE advertising
 static void restartBleAdvertising() {
   if (!bleReady) {
     startBle();
     return;
   }
-  // Force reset stale connection state and kickstart advertising
-  bleConnected = false;
-  bleSyncReqPending = false;
-  bleRestartPending = false;
-  if (bleServer) {
-    for (uint16_t i = 0; i < 4; i++) {
-      bleServer->disconnect(i);
+
+  BLEDevice::getAdvertising()->stop();
+
+  const bool hasActiveLink = bleConnected || (bleServer && bleServer->getConnectedCount() > 0);
+  if (bleServer && hasActiveLink) {
+    appendBleLog("SYS", "Disconnecting active phone...");
+    triggerAlert("DISCONNECTING & RESTARTING ADV...", pal().amber, 2500);
+
+    uint16_t curConnId = bleServer->getConnId();
+    bleServer->disconnect(bleActiveConnId);
+    if (curConnId != bleActiveConnId) {
+      bleServer->disconnect(curConnId);
     }
-  }
-  BLEAdvertising *adv = BLEDevice::getAdvertising();
-  if (adv) {
-    adv->stop();
-    delay(40);
-    adv->start();
+
+#if defined(CONFIG_BLUEDROID_ENABLED)
+    if (blePeerAddrValid) {
+      esp_ble_gap_disconnect(blePeerAddr);
+    }
+#endif
+
+    bleConnected      = false;
+    bleSyncReqPending = false;
+    blePeerAddrValid  = false;
+    bleRestartPending = true;
+    bleDisconnectAt   = millis();
   } else {
+    delay(60);
     BLEDevice::startAdvertising();
+    bleRestartPending = false;
+    appendBleLog("SYS", "Advertising restarted");
+    triggerAlert("BLE ADVERTISING RESTARTED", pal().cyan, 2000);
   }
-  appendBleLog("SYS", "Adv force-restarted");
-  triggerAlert("BLE ADV RESTARTED", pal().cyan, 2200);
 }
 
 static int splitPipes(const String &src, String *outParts, int maxParts) {
@@ -2698,6 +3027,24 @@ static void processBleCommand(const char *command) {
     strncpy(vs.dateStr, cmd.substring(5).c_str(), sizeof(vs.dateStr) - 1);
     vs.dateStr[sizeof(vs.dateStr) - 1] = '\0';
     bleTimeOverride = true;
+  } else if (cmd.startsWith("LOC:")) {
+    // Optional phone GPS push: LOC:<lat>|<lon>|<optionalCity>
+    String parts[3];
+    int n = splitPipes(cmd.substring(4), parts, 3);
+    if (n >= 2) {
+      float lat = parts[0].toFloat();
+      float lon = parts[1].toFloat();
+      if (fabsf(lat) > 0.001f || fabsf(lon) > 0.001f) {
+        vs.latitude  = lat;
+        vs.longitude = lon;
+        manualLocOverride = true;
+        if (n >= 3 && parts[2].length() > 0) {
+          strncpy(vs.cityStr, parts[2].c_str(), sizeof(vs.cityStr) - 1);
+          vs.cityStr[sizeof(vs.cityStr) - 1] = '\0';
+        }
+        if (WiFi.status() == WL_CONNECTED) triggerStandaloneWeatherSync();
+      }
+    }
   } else if (cmd.startsWith("WEATHER:")) {
     // Supports "WEATHER:28C Clear" or "WEATHER:28|Clear"
     String payload = cmd.substring(8);
@@ -2764,8 +3111,6 @@ static void processBleCommand(const char *command) {
     if (n == 2) pushNotification(parts[0].c_str(), parts[1].c_str(), true);
     else        pushNotification("Phone", payload.c_str(), true);
   } else if (cmd.startsWith("CALL:")) {
-    // Supports: CALL:INCOMING|<name>, CALL:RINGING|<name>, CALL:ACTIVE|<name>,
-    //           CALL:OFFHOOK|<name>, CALL:ENDED, CALL:IDLE, CALL:SPEAKER:ON/OFF
     String payload = cmd.substring(5);
     String parts[2];
     int n = splitPipes(payload, parts, 2);
@@ -2891,13 +3236,11 @@ static void processBleCommand(const char *command) {
     }
     if (drvNavArrowBox) lv_obj_invalidate(drvNavArrowBox);
     if (currentPage == PAGE_NAV) refreshNavHudCard();
-  } else if (cmd.equalsIgnoreCase("CMD:BLE:RESET") || cmd.equalsIgnoreCase("CMD:BLE:RECONNECT")) {
-    restartBleAdvertising();
   }
 }
 
 // -----------------------------------------------------------------------------
-// Wi-Fi Engine & IST NTP Clock Sync
+// Wi-Fi Engine & Scan Handling
 // -----------------------------------------------------------------------------
 static void startWifiConnection(const char *ssid, const char *password) {
   if (!ssid || !ssid[0]) return;
@@ -2908,12 +3251,17 @@ static void startWifiConnection(const char *ssid, const char *password) {
   WiFi.begin(ssid, password ? password : "");
   strncpy(activeWifiName, ssid, sizeof(activeWifiName) - 1);
   activeWifiName[sizeof(activeWifiName) - 1] = '\0';
+  weatherEverSynced = false;
   triggerAlert("CONNECTING WI-FI...", pal().cyan, 3000);
 }
 
 static void scanWifiNetworks() {
   if (wifiScanInProgress) return;
   WiFi.mode(WIFI_STA);
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect(false, false);
+    delay(20);
+  }
   WiFi.scanNetworks(true, false);
   wifiScanInProgress = true;
   if (conWifiList) {
@@ -3119,25 +3467,32 @@ static void stepPhysicsAndAnimations(uint32_t now) {
 static void updateSlowUi(uint32_t now) {
   const bool wifiOk = (WiFi.status() == WL_CONNECTED);
 
-  if (wifiOk && !ntpConfigured) {
-    configTime(19800, 0, "pool.ntp.org", "time.nist.gov");
-    ntpConfigured = true;
-    triggerAlert("WI-FI CONNECTED  |  TIME SYNCED", pal().green, 3000);
+  // Trigger standalone IP-Geo + Open-Meteo + Timezone sync when Wi-Fi connects & every 15 min
+  if (wifiOk) {
+    if (!ntpConfigured) {
+      configTime(vs.utcOffsetSec, 0, "pool.ntp.org", "time.nist.gov");
+      ntpConfigured = true;
+      triggerAlert("WI-FI CONNECTED  |  SYNCING WEATHER", pal().green, 3000);
+    }
+    if (!netSyncRunning && (!weatherEverSynced || (now - lastWeatherSyncMs >= WEATHER_REFRESH_MS))) {
+      triggerStandaloneWeatherSync();
+    }
   }
+
   if (ntpConfigured && !bleTimeOverride) {
     struct tm ti;
-    if (getLocalTime(&ti, 5)) {
+    if (getLocalTime(&ti, 0)) {
       strftime(vs.timeStr, sizeof(vs.timeStr), "%I:%M %p", &ti);
       strftime(vs.dateStr, sizeof(vs.dateStr), "%a, %d %b", &ti);
     }
   }
 
-  // Persistent Top Bar Icons
+  // Persistent Top Bar Icons (Battery Icon instead of Flash Icon)
   if (topWifiIcon) lv_obj_set_style_text_color(topWifiIcon, lv_color_hex(wifiOk ? pal().green : pal().muted), 0);
   if (topBleIcon)  lv_obj_set_style_text_color(topBleIcon, lv_color_hex(bleConnected ? pal().green : pal().cyan), 0);
   if (topSupplyLabel) {
-    char supBuf[20];
-    snprintf(supBuf, sizeof(supBuf), LV_SYMBOL_CHARGE " %d%%", vs.supplyBattery);
+    char supBuf[24];
+    snprintf(supBuf, sizeof(supBuf), "%s %d%%", batterySymbolForPct(vs.supplyBattery), vs.supplyBattery);
     setLabelIfChanged(topSupplyLabel, supBuf);
   }
 
@@ -3145,7 +3500,7 @@ static void updateSlowUi(uint32_t now) {
   if (dynamicPill && dynamicPillLabel) {
     uint32_t pillBg  = pal().surface;
     uint32_t pillTxt = pal().text;
-    char pillBuf[92];
+    char pillBuf[96];
 
     if (isOverspeed) {
       pillBg  = blinkState ? 0xEF4444 : 0x991B1B;
@@ -3218,8 +3573,9 @@ static void updateSlowUi(uint32_t now) {
     if (drvMediaProg) lv_bar_set_value(drvMediaProg, vs.mediaProgress, LV_ANIM_OFF);
     if (drvSocLbl) {
       int rangeKm = (int)(vs.socPercent * 4.9f);
-      char sBuf[40];
-      snprintf(sBuf, sizeof(sBuf), LV_SYMBOL_CHARGE " %d%%   |   %d %s",
+      char sBuf[44];
+      snprintf(sBuf, sizeof(sBuf), "%s %d%%   |   %d %s",
+               batterySymbolForPct((int)vs.socPercent),
                (int)vs.socPercent,
                vs.useMph ? (int)(rangeKm * 0.621f) : rangeKm,
                vs.useMph ? "mi" : "km");
@@ -3233,7 +3589,6 @@ static void updateSlowUi(uint32_t now) {
     }
   } else if (currentPage == PAGE_NAV) {
     if (vs.navDirty) refreshNavHudCard();
-    // Refresh call card when dirty or while pulsing on an incoming call
     if (vs.callDirty || (vs.callActive && !vs.callAnswered)) {
       refreshNavCallCard();
     }
@@ -3271,12 +3626,12 @@ static void updateSlowUi(uint32_t now) {
     }
     if (conWifiDetailLbl) {
       if (wifiOk) {
-        char det[96];
-        snprintf(det, sizeof(det), "%s  |  %s  |  %d dBm",
-                 WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        char det[112];
+        snprintf(det, sizeof(det), "%s  |  %s  |  %s (%s)",
+                 WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), vs.cityStr, vs.weatherStr);
         setLabelIfChanged(conWifiDetailLbl, det);
       } else {
-        setLabelIfChanged(conWifiDetailLbl, "Tap CONNECT ANSHIK or SCAN 2.4G");
+        setLabelIfChanged(conWifiDetailLbl, "Tap CONNECT ANSHIK or SCAN");
       }
     }
     if (conBleStatusLbl) {
@@ -3285,7 +3640,7 @@ static void updateSlowUi(uint32_t now) {
     }
     if (conBlePhoneLbl) {
       char bBuf[48];
-      if (vs.phoneBattery >= 0) snprintf(bBuf, sizeof(bBuf), "MTU 247  |  Phone Batt: %d%%", vs.phoneBattery);
+      if (vs.phoneBattery >= 0) snprintf(bBuf, sizeof(bBuf), "MTU 247  |  Phone: %s %d%%", batterySymbolForPct(vs.phoneBattery), vs.phoneBattery);
       else                      snprintf(bBuf, sizeof(bBuf), "MTU 247  |  Phone Batt: Waiting for App");
       setLabelIfChanged(conBlePhoneLbl, bBuf);
     }
@@ -3301,9 +3656,10 @@ static void updateSlowUi(uint32_t now) {
     }
   } else if (currentPage == PAGE_SYSTEM) {
     if (sysMemLbl) {
-      char buf[148];
+      char buf[164];
       snprintf(buf, sizeof(buf),
-               "CPU: 240 MHz Dual-Core LX7  |  ST7262 800x480\nInternal Heap: %lu KB  |  OPI PSRAM: %lu KB\nUptime: %lu s  |  GT911 Touch: %s",
+               "CPU: 240 MHz Dual-Core LX7  |  Loc: %s (%.2f, %.2f)\nInternal Heap: %lu KB  |  OPI PSRAM: %lu KB\nUptime: %lu s  |  GT911 Touch: %s",
+               vs.cityStr, vs.latitude, vs.longitude,
                (unsigned long)(ESP.getFreeHeap() / 1024),
                (unsigned long)(ESP.getFreePsram() / 1024),
                (unsigned long)(now / 1000),
@@ -3341,7 +3697,11 @@ void setup() {
     while (true) delay(1000);
   }
 
+  // Non-blocking auto-connect to saved Wi-Fi so standalone time/location/weather sync on boot
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(SAVED_SSID, SAVED_PASSWORD);
+
   startBle();
 
   initOverspeedOverlay();
@@ -3358,6 +3718,8 @@ void loop() {
   while (dequeueBleRx(rxBuf, sizeof(rxBuf))) {
     processBleCommand(rxBuf);
   }
+
+  applyStandaloneNetSyncResult();
 
   if (bleSyncReqPending && bleConnected && (now - bleConnectedAt >= 650)) {
     bleSyncReqPending = false;
