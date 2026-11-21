@@ -1,0 +1,7 @@
+Files in this project:
+
+CarCluster_Connectivity.ino          Main sketch: display UI, Wi-Fi, Bluetooth LE
+lv_conf.h                            Project-local LVGL 8 configuration
+esp_panel_board_supported_conf.h     Selects Waveshare ESP32-S3 Touch LCD 4.3
+esp_panel_drivers_conf.h             Enables ST7262, GT911, CH422G drivers
+README.txt                           Installation and testing instructions
