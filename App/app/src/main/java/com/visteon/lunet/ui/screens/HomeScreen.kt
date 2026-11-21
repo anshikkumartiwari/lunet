@@ -103,6 +103,10 @@ fun HomeScreen(viewModel: LunetViewModel) {
                     } else {
                         viewModel.connect()
                     }
+                },
+                onResetClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.forceResetBle()
                 }
             )
         }
@@ -184,7 +188,8 @@ private fun HeroConnectionCard(
     connectionState: BleConnectionState,
     rssi: Int,
     mtu: Int,
-    onConnectClick: () -> Unit
+    onConnectClick: () -> Unit,
+    onResetClick: () -> Unit
 ) {
     val colors = LunetTheme.colors
     val isConnected = connectionState == BleConnectionState.CONNECTED
@@ -202,80 +207,184 @@ private fun HeroConnectionCard(
         else -> "OFFLINE • ESP32 STANDBY"
     }
 
+    val signalQuality = when {
+        rssi >= -65 -> "EXCELLENT"
+        rssi >= -80 -> "GOOD"
+        rssi >= -90 -> "FAIR"
+        else -> "WEAK"
+    }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(20.dp))
             .background(colors.surface)
-            .border(1.dp, colors.border, RoundedCornerShape(16.dp))
-            .padding(16.dp)
+            .border(1.2.dp, if (isConnected) colors.green.copy(alpha = 0.4f) else colors.border, RoundedCornerShape(20.dp))
+            .padding(20.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            // Header Row: Status Indicator & Protocol Pill
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Mini BLE Radar Pulse Icon
-                BleRadarRing(
-                    connectionState = connectionState,
-                    rssi = rssi,
-                    mtu = mtu,
-                    onToggleConnection = onConnectClick,
-                    size = 58.dp
-                )
-
-                Spacer(modifier = Modifier.width(14.dp))
-
-                Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(7.dp)
-                                .clip(CircleShape)
-                                .background(statusDotColor)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = statusLabel,
-                            color = statusDotColor,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace,
-                            letterSpacing = 0.6.sp
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(2.dp))
-
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(9.dp)
+                            .clip(CircleShape)
+                            .background(statusDotColor)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (isConnected) "$rssi dBm  •  MTU $mtu  •  2.4 GHz LE" else "Target: Visteon-Lunet ESP32-S3",
-                        color = colors.textMuted,
+                        text = statusLabel,
+                        color = statusDotColor,
                         fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 0.8.sp
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(colors.panelAlt)
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        text = "BLE 5.0 GATT",
+                        color = colors.textMuted,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
                         fontFamily = FontFamily.Monospace
                     )
                 }
             }
 
-            Button(
-                onClick = onConnectClick,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isConnected || isScanning) colors.panelAlt else VisteonOrange
-                ),
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier.height(36.dp)
+            // Body: Large Radar Pulse + Device Details & Status Chips
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = if (isConnected) "DISCONNECT" else if (isScanning) "STOP" else "CONNECT",
-                    color = if (isConnected || isScanning) colors.text else colors.bg,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace
+                BleRadarRing(
+                    connectionState = connectionState,
+                    rssi = rssi,
+                    mtu = mtu,
+                    onToggleConnection = onConnectClick,
+                    size = 78.dp
                 )
+
+                Spacer(modifier = Modifier.width(16.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Visteon Lunet OS 3.0",
+                        color = colors.text,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(modifier = Modifier.height(2.dp))
+
+                    Text(
+                        text = if (isConnected) "Active Cluster Connection" else "ESP32-S3 Dual-Core HUD",
+                        color = colors.textMuted,
+                        fontSize = 12.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (isConnected) {
+                            StatusMetricChip(label = "$rssi dBm", subLabel = signalQuality, tint = colors.green)
+                            StatusMetricChip(label = "MTU $mtu", subLabel = "FAST", tint = colors.cyan)
+                        } else {
+                            StatusMetricChip(label = "Visteon-Lunet", subLabel = "TARGET", tint = colors.textMuted)
+                            StatusMetricChip(label = "2.4 GHz", subLabel = "LE", tint = colors.cyan)
+                        }
+                    }
+                }
             }
+
+            // Actions: Dual-button ergonomic controls
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(
+                    onClick = onConnectClick,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isConnected || isScanning) colors.panelAlt else VisteonOrange
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1.4f)
+                        .height(44.dp)
+                        .border(1.dp, if (isConnected || isScanning) colors.border else Color.Transparent, RoundedCornerShape(12.dp))
+                ) {
+                    Text(
+                        text = if (isConnected) "DISCONNECT" else if (isScanning) "STOP SCAN" else "CONNECT NOW",
+                        color = if (isConnected || isScanning) colors.text else colors.bg,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 0.5.sp
+                    )
+                }
+
+                Button(
+                    onClick = onResetClick,
+                    colors = ButtonDefaults.buttonColors(containerColor = colors.panelAlt),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp)
+                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                ) {
+                    Text(
+                        text = "RESET LINK",
+                        color = colors.cyan,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 0.5.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusMetricChip(label: String, subLabel: String, tint: Color) {
+    val colors = LunetTheme.colors
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(colors.panelAlt)
+            .border(1.dp, colors.border, RoundedCornerShape(6.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = label,
+                color = tint,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = subLabel,
+                color = colors.textMuted,
+                fontSize = 9.sp,
+                fontFamily = FontFamily.Monospace
+            )
         }
     }
 }
