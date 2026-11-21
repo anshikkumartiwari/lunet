@@ -1,0 +1,10 @@
+<resources>
+    <color name="visteon_orange">#F37B20</color>
+    <color name="obsidian_bg">#06090F</color>
+    <color name="elevated_carbon">#0E1521</color>
+    <color name="border_hairline">#22324A</color>
+    <color name="electric_cyan">#00D4FF</color>
+    <color name="emerald">#10B981</color>
+    <color name="amber">#F59E0B</color>
+    <color name="crimson">#EF4444</color>
+</resources>

@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">Visteon Lunet</string>
+    <string name="ble_service_name">Lunet BLE Service</string>
+    <string name="notification_channel_name">Visteon Lunet Link</string>
+    <string name="notification_channel_desc">Maintains persistent real-time link to ESP32 car cluster</string>
+    <string name="ping_channel_name">Cluster Emergency Ping</string>
+    <string name="ping_channel_desc">Anti-loss alert triggered from car cluster</string>
+</resources>
