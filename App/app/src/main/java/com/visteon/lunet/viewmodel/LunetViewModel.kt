@@ -20,10 +20,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 enum class ScreenTab(val title: String) {
-    COCKPIT("Cockpit"),
-    BRIDGE("Bridge"),
-    DEMO_REMOTE("Demo Remote"),
-    CONSOLE("Console")
+    HOME("Home"),
+    SYNC("Sync"),
+    DEMO("Demo")
 }
 
 class LunetViewModel(application: Application) : AndroidViewModel(application) {
@@ -52,7 +51,9 @@ class LunetViewModel(application: Application) : AndroidViewModel(application) {
     val autoReconnect = app.autoReconnectEnabled
 
     // UI state
-    private val _currentTab = MutableStateFlow(ScreenTab.COCKPIT)
+    val showBleConsoleSheet = MutableStateFlow(false)
+
+    private val _currentTab = MutableStateFlow(ScreenTab.HOME)
     val currentTab: StateFlow<ScreenTab> = _currentTab.asStateFlow()
 
     private val _isDarkMode = MutableStateFlow(true)
