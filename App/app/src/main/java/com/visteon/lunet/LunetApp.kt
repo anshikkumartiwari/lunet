@@ -235,6 +235,19 @@ class LunetApp : Application() {
         }
     }
 
+    fun onNavigationDismissed() {
+        _telemetry.value = _telemetry.value.copy(
+            navDirection = NavDirection.STRAIGHT,
+            navDistanceM = 0,
+            navStreet = "Start route in Google Maps",
+            navEtaMin = 0,
+            navRemKm = 0f
+        )
+        if (syncNavEnabled.value) {
+            bleManager.enqueuePacket("NAV:IDLE")
+        }
+    }
+
     // Demo Remote Controls
     fun setSpeed(spd: Float) {
         _telemetry.value = _telemetry.value.copy(speedKmh = spd)

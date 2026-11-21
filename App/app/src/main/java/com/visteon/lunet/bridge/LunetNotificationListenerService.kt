@@ -113,39 +113,91 @@ class LunetNotificationListenerService : NotificationListenerService() {
         LunetApp.instance?.onNotificationCaptured(appName, messageBody)
     }
 
+    private var lastNavPacket: String? = null
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+        super.onNotificationRemoved(sbn)
+        if (sbn?.packageName == "com.google.android.apps.maps") {
+            lastNavPacket = null
+            LunetApp.instance?.onNavigationDismissed()
+        }
+    }
+
     private fun parseGoogleMapsNotification(sbn: StatusBarNotification) {
-        val extras = sbn.notification?.extras ?: return
+        val notification = sbn.notification ?: return
+        val extras = notification.extras ?: return
+
         val title = extras.getString(Notification.EXTRA_TITLE) ?: ""
         val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
         val subText = extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString() ?: ""
+        val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString() ?: ""
 
-        val combined = "$title $text $subText".lowercase()
+        val rvStrings = if (title.isBlank() || text.isBlank()) {
+            extractRemoteViewsText(notification)
+        } else {
+            emptyList()
+        }
 
-        // 1. Determine maneuver
+        val combined = "$title $text $subText $bigText ${rvStrings.joinToString(" ")}".lowercase()
+
+        // 1. Determine maneuver direction
         val maneuver = when {
-            combined.contains("u-turn") || combined.contains("uturn") -> "UTURN"
-            combined.contains("left") -> "LEFT"
-            combined.contains("right") -> "RIGHT"
+            combined.contains("u-turn") || combined.contains("uturn") || combined.contains("make a u") -> "UTURN"
+            combined.contains("left") || combined.contains("exit left") || combined.contains("keep left") -> "LEFT"
+            combined.contains("right") || combined.contains("exit right") || combined.contains("keep right") -> "RIGHT"
             else -> "STRAIGHT"
         }
 
         // 2. Extract distance in meters
-        val distMeters = extractDistanceMeters(title.ifBlank { text })
+        val distSource = title.ifBlank { text.ifBlank { rvStrings.firstOrNull() ?: "" } }
+        val distMeters = extractDistanceMeters(distSource)
 
         // 3. Extract street name
-        val street = if (title.matches(Regex(".*\\b(m|km|ft|mi)\\b.*", RegexOption.IGNORE_CASE))) {
-            text.ifBlank { "Next Turn" }
+        val rawStreet = if (title.matches(Regex(".*\\b(m|km|ft|mi)\\b.*", RegexOption.IGNORE_CASE))) {
+            text.ifBlank { bigText.ifBlank { rvStrings.getOrNull(1) ?: "Next Turn" } }
         } else {
-            title.ifBlank { "Next Turn" }
-        }.take(30)
+            title.ifBlank { text.ifBlank { rvStrings.firstOrNull() ?: "Next Turn" } }
+        }
+        val street = com.visteon.lunet.ble.LunetBleManager.sanitizeField(rawStreet).take(28)
 
         // 4. Extract ETA and remaining km
         val etaMin = extractEtaMinutes(subText.ifBlank { text })
         val remKm = extractRemainingKm(subText.ifBlank { text })
 
         val navPacket = "NAV:$maneuver|$distMeters|$street|$etaMin|$remKm"
+        if (navPacket == lastNavPacket) return
+        lastNavPacket = navPacket
+
         Log.i(tag, "Extracted Google Maps Nav: $navPacket")
         LunetApp.instance?.onNavigationUpdated(maneuver, distMeters, street, etaMin, remKm, navPacket)
+    }
+
+    private fun extractRemoteViewsText(notification: Notification): List<String> {
+        val results = mutableListOf<String>()
+        val remoteViews = notification.bigContentView ?: notification.contentView ?: return results
+        try {
+            val dummy = android.widget.FrameLayout(this)
+            val inflated = remoteViews.apply(this, dummy)
+            collectViewStrings(inflated, results)
+        } catch (e: Exception) {
+            Log.w(tag, "RemoteViews inspection skipped: ${e.message}")
+        }
+        return results
+    }
+
+    private fun collectViewStrings(view: android.view.View, outList: MutableList<String>) {
+        if (view is android.widget.TextView) {
+            val text = view.text?.toString()?.trim()
+            if (!text.isNullOrBlank()) outList.add(text)
+        }
+        val contentDesc = view.contentDescription?.toString()?.trim()
+        if (!contentDesc.isNullOrBlank()) outList.add(contentDesc)
+
+        if (view is android.view.ViewGroup) {
+            for (i in 0 until view.childCount) {
+                collectViewStrings(view.getChildAt(i), outList)
+            }
+        }
     }
 
     private fun extractDistanceMeters(raw: String): Int {
