@@ -128,7 +128,19 @@ class LunetNotificationListenerService : NotificationListenerService() {
             return
         }
 
-        // 2. Ignore group summaries, ongoing/foreground, self, system, and Maps
+        // 2. Dialer Active Call Notification Extractor (Notification.CATEGORY_CALL fallback)
+        val notif = sbn.notification
+        val isCallNotif = notif != null && (
+            notif.category == Notification.CATEGORY_CALL ||
+            (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P && notif.extras?.containsKey(Notification.EXTRA_CALL_PERSON) == true) ||
+            (notif.extras?.getString(Notification.EXTRA_TEMPLATE)?.contains("CallStyle") == true)
+        )
+        if (isCallNotif) {
+            extractAndForwardCallNotification(sbn)
+            return
+        }
+
+        // 3. Ignore group summaries, ongoing/foreground, self, system, and Maps
         val flags = sbn.notification.flags
         if ((flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
         if ((flags and Notification.FLAG_ONGOING_EVENT) != 0) return
@@ -167,6 +179,33 @@ class LunetNotificationListenerService : NotificationListenerService() {
         LunetApp.instance?.onNotificationCaptured(appName, messageBody)
     }
 
+    private fun extractAndForwardCallNotification(sbn: StatusBarNotification) {
+        try {
+            val extras = sbn.notification?.extras ?: return
+            var callerName: String? = null
+
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                @Suppress("DEPRECATION")
+                val person = extras.getParcelable<android.app.Person>(Notification.EXTRA_CALL_PERSON)
+                callerName = person?.name?.toString()
+            }
+            if (callerName.isNullOrBlank()) {
+                callerName = extras.getString(Notification.EXTRA_TITLE)
+                    ?: extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
+            }
+            if (callerName.isNullOrBlank()) {
+                callerName = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+            }
+
+            if (!callerName.isNullOrBlank()) {
+                Log.i(tag, "Captured active dialer call notification (${sbn.packageName}): callerName='$callerName'")
+                LunetApp.instance?.telephonyBridge?.onDialerNotificationDetected(callerName)
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Error extracting call notification: ${e.message}")
+        }
+    }
+
     private var lastNavPacket: String? = null
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {
@@ -174,6 +213,9 @@ class LunetNotificationListenerService : NotificationListenerService() {
         if (sbn?.packageName == "com.google.android.apps.maps") {
             lastNavPacket = null
             LunetApp.instance?.onNavigationDismissed()
+        }
+        if (sbn?.notification?.category == Notification.CATEGORY_CALL) {
+            LunetApp.instance?.telephonyBridge?.onDialerNotificationRemoved()
         }
     }
 

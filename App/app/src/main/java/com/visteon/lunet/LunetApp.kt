@@ -64,6 +64,7 @@ class LunetApp : Application() {
     val isNotificationListenerActive: StateFlow<Boolean> = _isNotificationListenerActive.asStateFlow()
 
     private var syncPeriodicJob: Job? = null
+    private var weatherPeriodicJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -109,13 +110,16 @@ class LunetApp : Application() {
                     delay(300)
                     if (syncTimeBattWeather.value) {
                         syncEngine.triggerFullSync()
+                        syncEngine.fetchLiveWeatherAndSend()
                     }
                     if (syncMusicEnabled.value) {
                         bleManager.enqueuePacket(mediaBridge.formatMediaPacket())
                     }
                     startPeriodicSync()
+                    startWeatherPeriodicSync()
                 } else {
                     stopPeriodicSync()
+                    stopWeatherPeriodicSync()
                 }
             }
         }
@@ -136,6 +140,25 @@ class LunetApp : Application() {
     private fun stopPeriodicSync() {
         syncPeriodicJob?.cancel()
         syncPeriodicJob = null
+    }
+
+    private fun startWeatherPeriodicSync() {
+        weatherPeriodicJob?.cancel()
+        weatherPeriodicJob = appScope.launch {
+            while (isActive && bleManager.connectionState.value == BleConnectionState.CONNECTED) {
+                // Weather sync every 20 minutes while connected
+                delay(20 * 60 * 1000L)
+                if (syncTimeBattWeather.value) {
+                    Log.i(tag, "Executing 20-minute automatic weather sync")
+                    syncEngine.fetchLiveWeatherAndSend()
+                }
+            }
+        }
+    }
+
+    private fun stopWeatherPeriodicSync() {
+        weatherPeriodicJob?.cancel()
+        weatherPeriodicJob = null
     }
 
     private fun observeMediaChanges() {
@@ -169,12 +192,12 @@ class LunetApp : Application() {
             pkt.startsWith("CMD:MEDIA:") || pkt.startsWith("CMD:VOL:") || pkt.startsWith("CMD:EQ:") -> {
                 mediaBridge.handleClusterCommand(pkt)
             }
-            pkt == "CMD:CALL:ACCEPT" -> telephonyBridge.acceptCall()
-            pkt == "CMD:CALL:DECLINE" -> telephonyBridge.declineCall()
+            pkt.startsWith("CMD:CALL:") -> telephonyBridge.handleClusterCommand(pkt)
             pkt == "CMD:PHONE:PING" -> phoneFinder.triggerAlarm("ESP32 Cluster Ping")
             pkt == "CMD:SYNC:REQ" -> {
                 if (syncTimeBattWeather.value) {
                     syncEngine.triggerFullSync()
+                    syncEngine.fetchLiveWeatherAndSend()
                 }
                 if (syncMusicEnabled.value) {
                     bleManager.enqueuePacket(mediaBridge.formatMediaPacket())

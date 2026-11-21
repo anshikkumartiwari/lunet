@@ -94,7 +94,11 @@ fun SyncScreen(viewModel: LunetViewModel) {
 
     val hasPhoneState = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
     val hasAnswerCalls = ContextCompat.checkSelfPermission(context, Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED
+    val hasCallLog = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED
     val hasContacts = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+    val hasAudioSettings = ContextCompat.checkSelfPermission(context, Manifest.permission.MODIFY_AUDIO_SETTINGS) == PackageManager.PERMISSION_GRANTED
+    val hasCoarseLocation = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
     val hasPostNotif = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
     } else true
@@ -272,9 +276,9 @@ fun SyncScreen(viewModel: LunetViewModel) {
                     )
 
                     PermissionCheckRow(
-                        title = "Phone & Call Controls",
-                        description = "Detect calls & execute accept / decline",
-                        isGranted = hasPhoneState && hasAnswerCalls,
+                        title = "Phone & Hands-Free Audio",
+                        description = "State, Call Log, Answer & Speaker Routing",
+                        isGranted = hasPhoneState && hasAnswerCalls && hasCallLog && hasAudioSettings,
                         onClick = { openAppSettings(context) }
                     )
 
@@ -282,6 +286,13 @@ fun SyncScreen(viewModel: LunetViewModel) {
                         title = "Contacts Lookup",
                         description = "Resolve phone numbers to contact names",
                         isGranted = hasContacts,
+                        onClick = { openAppSettings(context) }
+                    )
+
+                    PermissionCheckRow(
+                        title = "Location & Weather Sync",
+                        description = "Coarse GPS for Open-Meteo local forecasts",
+                        isGranted = hasCoarseLocation,
                         onClick = { openAppSettings(context) }
                     )
 

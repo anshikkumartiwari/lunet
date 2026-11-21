@@ -97,16 +97,24 @@ class LunetViewModel(application: Application) : AndroidViewModel(application) {
     // Sync Actions
     fun triggerFullSync() {
         app.syncEngine.triggerFullSync()
+        app.syncEngine.fetchLiveWeatherAndSend()
     }
 
     fun fetchWeather() {
-        app.syncEngine.fetchLiveWeather()
+        app.syncEngine.fetchLiveWeatherAndSend()
     }
 
     fun setManualWeather(override: String) {
         app.syncEngine.setManualWeatherOverride(override)
         app.bleManager.enqueuePacket("WEATHER:$override")
     }
+
+    // Real Phone Call Actions
+    fun acceptCall() = app.telephonyBridge.acceptCall()
+    fun acceptCallWithSpeaker() = app.telephonyBridge.acceptSpeaker()
+    fun toggleSpeaker() = app.telephonyBridge.toggleSpeaker()
+    fun setSpeaker(on: Boolean) = app.telephonyBridge.setSpeakerphone(on)
+    fun declineCall() = app.telephonyBridge.declineCall()
 
     // Demo Remote Controls
     fun setSpeed(spd: Float) {
@@ -148,6 +156,10 @@ class LunetViewModel(application: Application) : AndroidViewModel(application) {
 
     fun simulateEndCall() {
         app.bleManager.enqueuePacket("CALL:ENDED")
+    }
+
+    fun simulateSpeaker(on: Boolean) {
+        app.bleManager.enqueuePacket(if (on) "CALL:SPEAKER:ON" else "CALL:SPEAKER:OFF")
     }
 
     fun sendSampleNotification(

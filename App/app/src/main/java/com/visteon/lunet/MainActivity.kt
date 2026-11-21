@@ -21,6 +21,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         // Permissions handled smoothly; UI reflects granted state dynamically
+        (application as? LunetApp)?.telephonyBridge?.registerCallListener()
         val allGranted = permissions.values.all { it }
         if (allGranted) {
             viewModel.connect()
@@ -40,6 +41,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        (application as? LunetApp)?.telephonyBridge?.registerCallListener()
+    }
+
     private fun requestRequiredPermissions() {
         val permissions = mutableListOf<String>()
 
@@ -52,9 +58,14 @@ class MainActivity : ComponentActivity() {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
 
+        // Phone call handling permissions
         permissions.add(Manifest.permission.READ_PHONE_STATE)
-        permissions.add(Manifest.permission.ANSWER_PHONE_CALLS)
+        permissions.add(Manifest.permission.READ_CALL_LOG)
         permissions.add(Manifest.permission.READ_CONTACTS)
+        permissions.add(Manifest.permission.ANSWER_PHONE_CALLS)
+
+        // Weather sync location permissions (ACCESS_COARSE_LOCATION & ACCESS_FINE_LOCATION)
+        permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
         permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
 
         requestPermissionsLauncher.launch(permissions.toTypedArray())

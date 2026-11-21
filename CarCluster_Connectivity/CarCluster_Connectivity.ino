@@ -74,7 +74,7 @@ using namespace esp_panel::drivers;
 #endif
 
 // -----------------------------------------------------------------------------
-// Safe Math Helpers (Avoids ESP32 Core 3.x min/max/constrain type mismatches)
+// Safe Math & Formatting Helpers
 // -----------------------------------------------------------------------------
 static inline int clampInt(int v, int lo, int hi) {
   return (v < lo) ? lo : ((v > hi) ? hi : v);
@@ -82,6 +82,30 @@ static inline int clampInt(int v, int lo, int hi) {
 
 static inline float clampFloat(float v, float lo, float hi) {
   return (v < lo) ? lo : ((v > hi) ? hi : v);
+}
+
+static void formatDistance(char *buf, size_t len, int meters) {
+  if (meters >= 1000) {
+    snprintf(buf, len, "%.1f km", meters / 1000.0f);
+  } else {
+    snprintf(buf, len, "%d m", meters);
+  }
+}
+
+static void formatEta(char *buf, size_t len, int mins) {
+  if (mins >= 60) {
+    snprintf(buf, len, "%dh %dm", mins / 60, mins % 60);
+  } else {
+    snprintf(buf, len, "%d min", mins);
+  }
+}
+
+static void setLabelIfChanged(lv_obj_t *lbl, const char *text) {
+  if (!lbl || !text) return;
+  const char *cur = lv_label_get_text(lbl);
+  if (!cur || strcmp(cur, text) != 0) {
+    lv_label_set_text(lbl, text);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -126,6 +150,7 @@ static const ThemePalette THEME_LIGHT = {
 
 static bool lightTheme = false;
 #define pal() (lightTheme ? THEME_LIGHT : THEME_DARK)
+
 // -----------------------------------------------------------------------------
 // Hardware & Core Handles
 // -----------------------------------------------------------------------------
@@ -139,16 +164,17 @@ static lv_color_t *drawBuffer1 = nullptr;
 static lv_color_t *drawBuffer2 = nullptr;
 static esp_timer_handle_t lvglTickTimer = nullptr;
 
-// BLE State & Thread-Safe 12-Slot Ring Queue
+// BLE State & Thread-Safe 24-Slot Ring Queue (Handles Initial Burst Sync Cleanly)
 static bool bleReady = false;
 static volatile bool bleConnected = false;
 static volatile bool bleRestartPending = false;
 static volatile bool bleSyncReqPending = false;
 static uint32_t bleDisconnectAt = 0;
 static uint32_t bleConnectedAt  = 0;
+static BLEServer *bleServer = nullptr;
 static BLECharacteristic *bleCharacteristic = nullptr;
 
-static constexpr uint8_t BLE_QUEUE_SIZE = 12;
+static constexpr uint8_t BLE_QUEUE_SIZE = 24;
 static constexpr size_t  BLE_MSG_MAX    = 160;
 static portMUX_TYPE bleQueueMux = portMUX_INITIALIZER_UNLOCKED;
 static char bleQueue[BLE_QUEUE_SIZE][BLE_MSG_MAX];
@@ -188,6 +214,12 @@ static PageId currentPage = PAGE_DRIVE;
 enum DriveMode : uint8_t { MODE_ECO = 0, MODE_COMFORT = 1, MODE_SPORT = 2 };
 enum NavArrow  : uint8_t { NAV_STRAIGHT = 0, NAV_RIGHT = 1, NAV_LEFT = 2, NAV_UTURN = 3 };
 
+struct NotifItem {
+  char app[20];
+  char msg[88];
+};
+static constexpr uint8_t MAX_NOTIFS = 5;
+
 struct VehicleState {
   // Powertrain & Dynamics (Safe Boot Defaults)
   float speedKmh       = 0.0f;
@@ -217,6 +249,7 @@ struct VehicleState {
   bool  accActive      = true;
   float leadDistM      = 42.0f;
   float roadPhase      = 0.0f;
+  bool  adasDirty      = true;
 
   // Body & TPMS (PSI)
   float tpms[4]        = {34.2f, 34.4f, 33.8f, 34.1f};
@@ -236,37 +269,45 @@ struct VehicleState {
   // Phone Sync & Dynamic Alert
   char  timeStr[16]    = "12:00 PM";
   char  dateStr[24]    = "Sat, 21 Nov";
-  char  weatherStr[28] = "27C Clear";
+  char  weatherStr[32] = "Weather --";
   int   supplyBattery  = 100;   // Direct power supply = 100%
   int   phoneBattery   = -1;    // Synced via PBATT:<0-100>
-  char  alertText[72]  = "";
+  char  alertText[76]  = "";
   uint32_t alertColor  = VISTEON_ORANGE;
   uint32_t alertUntil  = 0;
 
-  // Navigation
-  NavArrow navDir      = NAV_RIGHT;
-  int   navDistM       = 250;
-  char  navStreet[56]  = "Outer Ring Expressway";
-  char  navDest[40]    = "Visteon Tech Park";
-  int   navEtaMin      = 16;
-  float navRemKm       = 11.4f;
-  int   navRoutePct    = 38;
+  // Live Google Maps Navigation
+  bool  navActive      = false;
+  NavArrow navDir      = NAV_STRAIGHT;
+  int   navDistM       = 0;
+  char  navStreet[64]  = "Start a route in Google Maps on phone";
+  char  navDest[44]    = "Waiting for Maps";
+  int   navEtaMin      = 0;
+  float navRemKm       = 0.0f;
+  int   navRoutePct    = 0;
+  bool  navDirty       = true;
 
-  // Phone Call & Notifications
+  // Phone Call & 5-Item Recent Notification Feed
   bool  callActive     = false;
   bool  callAnswered   = false;
-  char  callerName[44] = "No Active Call";
-  char  notifText[96]  = "Waiting for phone notifications...";
+  bool  callSpeaker    = false;
+  char  callerName[48] = "No Active Call";
+  bool  callDirty      = true;
+  NotifItem notifs[MAX_NOTIFS];
+  uint8_t notifCount   = 0;
+  bool  notifDirty     = true;
 
-  // Media
-  char  mediaTitle[56] = "Not Playing";
-  char  mediaArtist[44]= "Connect Lunet App for Live Audio";
+  // Live Phone Media
+  char  mediaTitle[56] = "No Media Playing";
+  char  mediaArtist[44]= "Play music on phone";
   bool  mediaPlaying   = false;
+  bool  liveMediaSynced= false;
+  uint32_t lastMediaRxMs = 0;
   int   mediaProgress  = 0;
   int   mediaVolume    = 70;
   bool  mediaMuted     = false;
   int   eqPreset       = 0;
-  float eqBars[12]     = {8,12,10,14,12,10,8,12,10,12,8,10};
+  float eqBars[12]     = {8,8,8,8,8,8,8,8,8,8,8,8};
   float vinylAngle     = 0.0f;
 
   // Touch Tracker
@@ -276,6 +317,7 @@ struct VehicleState {
 
 static char bleLogLines[8][82];
 static uint8_t bleLogCount = 0;
+static bool bleLogDirty = true;
 
 // -----------------------------------------------------------------------------
 // Persistent Shell & Page Widget Pointers
@@ -332,16 +374,31 @@ static lv_obj_t *drvSocBar        = nullptr;
 static lv_obj_t *drvEffLbl        = nullptr;
 
 // Page 2: NAV / PHONE pointers
+static lv_obj_t *navStatusBadge   = nullptr;
+static lv_obj_t *navStatusLbl     = nullptr;
 static lv_obj_t *navBigArrowBox   = nullptr;
 static lv_obj_t *navBigDistLbl    = nullptr;
 static lv_obj_t *navBigActionLbl  = nullptr;
 static lv_obj_t *navBigStreetLbl  = nullptr;
+static lv_obj_t *navProgPctLbl    = nullptr;
 static lv_obj_t *navProgBar       = nullptr;
-static lv_obj_t *navEtaDetailLbl  = nullptr;
+static lv_obj_t *navEtaValLbl     = nullptr;
+static lv_obj_t *navEtaSubLbl     = nullptr;
+static lv_obj_t *navRemValLbl     = nullptr;
+static lv_obj_t *navRemSubLbl     = nullptr;
+static lv_obj_t *navDestValLbl    = nullptr;
+
+static lv_obj_t *navCallCard      = nullptr;
 static lv_obj_t *navCallStatusLbl = nullptr;
 static lv_obj_t *navCallerLbl     = nullptr;
+static lv_obj_t *navCallSubLbl    = nullptr;
 static lv_obj_t *navPhoneBattLbl  = nullptr;
-static lv_obj_t *navNotifLbl      = nullptr;
+static lv_obj_t *navAcceptBtn     = nullptr;
+static lv_obj_t *navSpeakerBtn    = nullptr;
+static lv_obj_t *navSpeakerBtnLbl = nullptr;
+static lv_obj_t *navEndBtn        = nullptr;
+static lv_obj_t *navNotifCountLbl = nullptr;
+static lv_obj_t *navNotifList     = nullptr;
 
 // Page 3: MEDIA pointers
 static lv_obj_t *medDiscCanvas    = nullptr;
@@ -390,7 +447,7 @@ static lv_obj_t *sysTouchLbl      = nullptr;
 static lv_obj_t *sysTouchDot      = nullptr;
 static lv_obj_t *sysUnitBtnLbl    = nullptr;
 
-// Timing Trackers
+// Timing & UI Diff Trackers
 static uint32_t lastPhysicsMs     = 0;
 static uint32_t lastSlowUiMs      = 0;
 static uint32_t lastChartMs       = 0;
@@ -398,6 +455,13 @@ static uint32_t lastVolTxMs       = 0;
 static bool     blinkState        = false;
 static uint32_t lastBlinkMs       = 0;
 static bool     isOverspeed       = false;
+
+static int      lastShownSpeed    = -1;
+static int      lastShownPower    = -999;
+static bool     lastOverspeedVis  = false;
+static bool     lastBlinkVis      = false;
+static uint32_t lastPillBgHex     = 0xFFFFFFFF;
+static uint32_t lastPillTxtHex    = 0xFFFFFFFF;
 
 // -----------------------------------------------------------------------------
 // Forward Declarations
@@ -408,6 +472,11 @@ static void showBootSplash();
 static void sendBlePacket(const char *packet);
 static void appendBleLog(const char *prefix, const char *msg);
 static void triggerAlert(const char *text, uint32_t colorHex, uint32_t durationMs = 4000);
+static void pushNotification(const char *appName, const char *message, bool flashBanner);
+static void clearNotifications();
+static void rebuildNotifList();
+static void refreshNavHudCard();
+static void refreshNavCallCard();
 static void startWifiConnection(const char *ssid, const char *password);
 static void scanWifiNetworks();
 static void updateWifiScanResults();
@@ -431,7 +500,7 @@ static inline int displayLimit() {
 // Custom Vector Renderers (Anti-Aliased LVGL 8.4 — Zero Extra Flash/RAM)
 // -----------------------------------------------------------------------------
 
-// Exact geometric vector reconstruction of Visteon v.png (#F37B20)
+// Exact geometric vector reconstruction of Visteon logo (#F37B20)
 static void drawVisteonLogoCb(lv_event_t *e) {
   lv_obj_t *obj = lv_event_get_target(e);
   lv_draw_ctx_t *drawCtx = lv_event_get_draw_ctx(e);
@@ -523,7 +592,7 @@ static void drawThemeIconCb(lv_event_t *e) {
   }
 }
 
-// Vector Turn-by-Turn Navigation Arrow (Straight / Right / Left / U-Turn)
+// Vector Turn-by-Turn Navigation Arrow (Scales smoothly for Mini & Large HUD)
 static void drawNavArrowCb(lv_event_t *e) {
   lv_obj_t *obj = lv_event_get_target(e);
   lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(e);
@@ -534,19 +603,48 @@ static void drawNavArrowCb(lv_event_t *e) {
   const int cy = (a.y1 + a.y2) / 2;
   const int w  = lv_area_get_width(&a);
   const int h  = lv_area_get_height(&a);
-  const int sw = (w > 70) ? 10 : 5;
-  const int hs = (w > 70) ? 18 : 9;
+  const int sw = (w >= 130) ? 14 : ((w > 70) ? 10 : 5);
+  const int hs = (w >= 130) ? 24 : ((w > 70) ? 18 : 9);
+
+  uint32_t col = vs.navActive ? pal().green : pal().muted;
+
+  if (!vs.navActive) {
+    // Clean Idle Navigation Compass Pointer
+    lv_draw_rect_dsc_t triDsc;
+    lv_draw_rect_dsc_init(&triDsc);
+    triDsc.bg_color = lv_color_hex(col);
+    triDsc.bg_opa   = LV_OPA_COVER;
+    int r = (w >= 130) ? 38 : ((w > 70) ? 30 : 14);
+    lv_point_t ptr[3] = {
+      {(lv_coord_t)cx, (lv_coord_t)(cy - r)},
+      {(lv_coord_t)(cx - (r * 3) / 4), (lv_coord_t)(cy + r)},
+      {(lv_coord_t)(cx + (r * 3) / 4), (lv_coord_t)(cy + r)}
+    };
+    lv_draw_polygon(ctx, &triDsc, ptr, 3);
+
+    lv_draw_rect_dsc_t notch;
+    lv_draw_rect_dsc_init(&notch);
+    notch.bg_color = lv_color_hex(pal().surfaceAlt);
+    notch.bg_opa   = LV_OPA_COVER;
+    lv_point_t cut[3] = {
+      {(lv_coord_t)cx, (lv_coord_t)(cy + r / 4)},
+      {(lv_coord_t)(cx - r / 2), (lv_coord_t)(cy + r + 2)},
+      {(lv_coord_t)(cx + r / 2), (lv_coord_t)(cy + r + 2)}
+    };
+    lv_draw_polygon(ctx, &notch, cut, 3);
+    return;
+  }
 
   lv_draw_line_dsc_t ld;
   lv_draw_line_dsc_init(&ld);
-  ld.color = lv_color_hex(pal().green);
+  ld.color = lv_color_hex(col);
   ld.width = sw;
   ld.round_start = 1;
   ld.round_end   = 1;
 
   lv_draw_rect_dsc_t headDsc;
   lv_draw_rect_dsc_init(&headDsc);
-  headDsc.bg_color = lv_color_hex(pal().green);
+  headDsc.bg_color = lv_color_hex(col);
   headDsc.bg_opa   = LV_OPA_COVER;
 
   if (vs.navDir == NAV_RIGHT) {
@@ -612,7 +710,6 @@ static void drawAdasCanvasCb(lv_event_t *e) {
   const int vy = a.y1 + 24;
   const int rH = (a.y2 - vy);
 
-  // 1. Perspective Road Surface
   lv_draw_rect_dsc_t roadDsc;
   lv_draw_rect_dsc_init(&roadDsc);
   roadDsc.bg_color = lv_color_hex(pal().road);
@@ -626,7 +723,6 @@ static void drawAdasCanvasCb(lv_event_t *e) {
   };
   lv_draw_polygon(ctx, &roadDsc, roadPoly, 4);
 
-  // 2. Horizon Line
   lv_draw_line_dsc_t horzDsc;
   lv_draw_line_dsc_init(&horzDsc);
   horzDsc.color = lv_color_hex(pal().border);
@@ -635,7 +731,6 @@ static void drawAdasCanvasCb(lv_event_t *e) {
   lv_point_t h2 = {(lv_coord_t)(a.x2 - 4), (lv_coord_t)vy};
   lv_draw_line(ctx, &horzDsc, &h1, &h2);
 
-  // 3. Perspective Center Dashes
   lv_draw_line_dsc_t dashDsc;
   lv_draw_line_dsc_init(&dashDsc);
   dashDsc.color = lv_color_hex(pal().muted);
@@ -655,7 +750,6 @@ static void drawAdasCanvasCb(lv_event_t *e) {
     lv_draw_line(ctx, &dashDsc, &p1, &p2);
   }
 
-  // 4. Active LKA Boundary Rails (Turns crimson during overspeed)
   lv_draw_line_dsc_t railDsc;
   lv_draw_line_dsc_init(&railDsc);
   uint32_t railCol = isOverspeed ? pal().red : (vs.lkaActive && vs.gear == 'D' ? modeAccentColor() : pal().muted);
@@ -670,7 +764,6 @@ static void drawAdasCanvasCb(lv_event_t *e) {
   lv_draw_line(ctx, &railDsc, &lTop, &lBot);
   lv_draw_line(ctx, &railDsc, &rTop, &rBot);
 
-  // 5. Radar-Tracked Lead Vehicle (Visible when in Drive)
   if (vs.gear == 'D') {
     float normDist = clampFloat((vs.leadDistM - 15.0f) / 60.0f, 0.0f, 1.0f);
     float leadT = 0.56f - normDist * 0.34f;
@@ -711,7 +804,6 @@ static void drawAdasCanvasCb(lv_event_t *e) {
     lv_draw_rect(ctx, &tailDsc, &ltR);
   }
 
-  // 6. Ego Vehicle Silhouette
   int egoW = 74, egoH = 92;
   int egoTop = a.y2 - egoH - 6;
 
@@ -744,7 +836,6 @@ static void drawAdasCanvasCb(lv_event_t *e) {
                         (lv_coord_t)(cx + 24), (lv_coord_t)(egoTop + 68)};
   lv_draw_rect(ctx, &glassDsc, &glassBox);
 
-  // Full-Width EV Taillight Bar (bright when braking or in Park)
   bool brakeLit = vs.braking || (vs.gear == 'P');
   lv_draw_rect_dsc_t egoTail;
   lv_draw_rect_dsc_init(&egoTail);
@@ -755,7 +846,6 @@ static void drawAdasCanvasCb(lv_event_t *e) {
                      (lv_coord_t)(cx + 28), (lv_coord_t)(egoTop + egoH - 4)};
   lv_draw_rect(ctx, &egoTail, &etBar);
 
-  // Turn Signal / Hazard Chevrons
   bool showLeft  = (vs.leftBlinker  || vs.hazard) && blinkState;
   bool showRight = (vs.rightBlinker || vs.hazard) && blinkState;
 
@@ -1090,8 +1180,12 @@ static void resetPagePointers() {
   for (int i = 0; i < 4; ++i) drvGearBtns[i] = nullptr;
   for (int i = 0; i < 3; ++i) drvModeBtns[i] = nullptr;
 
-  navBigArrowBox = navBigDistLbl = navBigActionLbl = navBigStreetLbl = nullptr;
-  navProgBar = navEtaDetailLbl = navCallStatusLbl = navCallerLbl = navPhoneBattLbl = navNotifLbl = nullptr;
+  navStatusBadge = navStatusLbl = navBigArrowBox = navBigDistLbl = nullptr;
+  navBigActionLbl = navBigStreetLbl = navProgPctLbl = navProgBar = nullptr;
+  navEtaValLbl = navEtaSubLbl = navRemValLbl = navRemSubLbl = navDestValLbl = nullptr;
+  navCallCard = navCallStatusLbl = navCallerLbl = navCallSubLbl = navPhoneBattLbl = nullptr;
+  navAcceptBtn = navSpeakerBtn = navSpeakerBtnLbl = navEndBtn = nullptr;
+  navNotifCountLbl = navNotifList = nullptr;
 
   medDiscCanvas = medEqCanvas = medTitleLbl = medArtistLbl = medProgSlider = nullptr;
   medTimeLbl = medPlayBtnLbl = medVolSlider = medVolLbl = nullptr;
@@ -1109,6 +1203,11 @@ static void resetPagePointers() {
   serSpeed = serPower = nullptr;
 #endif
   sysMemLbl = sysTouchLbl = sysTouchDot = sysUnitBtnLbl = nullptr;
+
+  lastShownSpeed   = -1;
+  lastShownPower   = -999;
+  lastOverspeedVis = false;
+  lastBlinkVis     = false;
 }
 
 static void triggerAlert(const char *text, uint32_t colorHex, uint32_t durationMs) {
@@ -1116,6 +1215,114 @@ static void triggerAlert(const char *text, uint32_t colorHex, uint32_t durationM
   vs.alertText[sizeof(vs.alertText) - 1] = '\0';
   vs.alertColor = colorHex;
   vs.alertUntil = millis() + durationMs;
+}
+
+// -----------------------------------------------------------------------------
+// 5-Item Recent Notification Feed Helpers
+// -----------------------------------------------------------------------------
+static void pushNotification(const char *appName, const char *message, bool flashBanner) {
+  const char *safeApp = (appName && appName[0]) ? appName : "Phone";
+  const char *safeMsg = (message && message[0]) ? message : "";
+  if (!safeMsg[0]) return;
+
+  if (vs.notifCount > 0 &&
+      strncmp(vs.notifs[0].app, safeApp, sizeof(vs.notifs[0].app)) == 0 &&
+      strncmp(vs.notifs[0].msg, safeMsg, sizeof(vs.notifs[0].msg)) == 0) {
+    if (flashBanner) {
+      char banner[76];
+      snprintf(banner, sizeof(banner), "%s: %s", safeApp, safeMsg);
+      triggerAlert(banner, pal().amber, 4500);
+    }
+    return;
+  }
+
+  uint8_t shiftLimit = (vs.notifCount < MAX_NOTIFS) ? vs.notifCount : (MAX_NOTIFS - 1);
+  for (int i = (int)shiftLimit; i > 0; --i) {
+    vs.notifs[i] = vs.notifs[i - 1];
+  }
+  strncpy(vs.notifs[0].app, safeApp, sizeof(vs.notifs[0].app) - 1);
+  vs.notifs[0].app[sizeof(vs.notifs[0].app) - 1] = '\0';
+  strncpy(vs.notifs[0].msg, safeMsg, sizeof(vs.notifs[0].msg) - 1);
+  vs.notifs[0].msg[sizeof(vs.notifs[0].msg) - 1] = '\0';
+
+  if (vs.notifCount < MAX_NOTIFS) vs.notifCount++;
+  vs.notifDirty = true;
+
+  if (flashBanner) {
+    char banner[76];
+    snprintf(banner, sizeof(banner), "%s: %s", safeApp, safeMsg);
+    triggerAlert(banner, pal().amber, 4500);
+  }
+}
+
+static void clearNotifications() {
+  vs.notifCount = 0;
+  vs.notifDirty = true;
+}
+
+static void rebuildNotifList() {
+  if (currentPage != PAGE_NAV || !navNotifList) return;
+  lv_obj_clean(navNotifList);
+
+  if (navNotifCountLbl) {
+    char cntBuf[16];
+    snprintf(cntBuf, sizeof(cntBuf), "%u / %u", (unsigned)vs.notifCount, (unsigned)MAX_NOTIFS);
+    setLabelIfChanged(navNotifCountLbl, cntBuf);
+  }
+
+  if (vs.notifCount == 0) {
+    lv_obj_t *emptyLbl = lv_label_create(navNotifList);
+    lv_label_set_text(emptyLbl, "No recent notifications.\nPhone messages will appear here.");
+    lv_obj_set_style_text_font(emptyLbl, FONT_XS, 0);
+    lv_obj_set_style_text_color(emptyLbl, lv_color_hex(pal().muted), 0);
+    lv_obj_set_width(emptyLbl, 266);
+    lv_label_set_long_mode(emptyLbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_pos(emptyLbl, 4, 6);
+    vs.notifDirty = false;
+    return;
+  }
+
+  for (uint8_t i = 0; i < vs.notifCount; ++i) {
+    lv_obj_t *item = lv_obj_create(navNotifList);
+    lv_obj_set_width(item, 272);
+#if LV_USE_FLEX
+    lv_obj_set_height(item, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(item, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(item, 2, 0);
+#else
+    lv_obj_set_pos(item, 0, i * 54);
+    lv_obj_set_height(item, 50);
+#endif
+    lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(item, lv_color_hex(pal().surfaceAlt), 0);
+    lv_obj_set_style_bg_opa(item, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(item, lv_color_hex(i == 0 ? VISTEON_ORANGE : pal().border), 0);
+    lv_obj_set_style_border_width(item, 1, 0);
+    lv_obj_set_style_radius(item, 8, 0);
+    lv_obj_set_style_pad_hor(item, 8, 0);
+    lv_obj_set_style_pad_ver(item, 5, 0);
+
+    lv_obj_t *appLbl = lv_label_create(item);
+    lv_label_set_text(appLbl, vs.notifs[i].app);
+    lv_obj_set_style_text_font(appLbl, FONT_XS, 0);
+    lv_obj_set_style_text_color(appLbl, lv_color_hex(i == 0 ? VISTEON_ORANGE : pal().amber), 0);
+    lv_obj_set_width(appLbl, 254);
+    lv_label_set_long_mode(appLbl, LV_LABEL_LONG_DOT);
+
+    lv_obj_t *msgLbl = lv_label_create(item);
+    lv_label_set_text(msgLbl, vs.notifs[i].msg);
+    lv_obj_set_style_text_font(msgLbl, FONT_XS, 0);
+    lv_obj_set_style_text_color(msgLbl, lv_color_hex(pal().text), 0);
+    lv_obj_set_width(msgLbl, 254);
+#if LV_USE_FLEX
+    lv_label_set_long_mode(msgLbl, LV_LABEL_LONG_WRAP);
+#else
+    lv_obj_set_pos(msgLbl, 0, 16);
+    lv_label_set_long_mode(msgLbl, LV_LABEL_LONG_DOT);
+#endif
+  }
+
+  vs.notifDirty = false;
 }
 
 // -----------------------------------------------------------------------------
@@ -1192,13 +1399,14 @@ static void showBootSplash() {
 // -----------------------------------------------------------------------------
 static void refreshDriveStyles() {
   if (currentPage != PAGE_DRIVE) return;
+  vs.adasDirty = true;
   uint32_t acc = modeAccentColor();
   if (drvSpeedArc && !isOverspeed) {
     lv_obj_set_style_arc_color(drvSpeedArc, lv_color_hex(acc), LV_PART_INDICATOR);
   }
   if (drvModeBadge) {
     const char *mNames[3] = {"ECO MODE", "COMFORT", "SPORT+"};
-    lv_label_set_text(drvModeBadge, mNames[vs.mode]);
+    setLabelIfChanged(drvModeBadge, mNames[vs.mode]);
     lv_obj_set_style_text_color(drvModeBadge, lv_color_hex(acc), 0);
   }
   const char gears[4] = {'P', 'R', 'N', 'D'};
@@ -1387,8 +1595,9 @@ static void buildPageDrive() {
   lv_obj_add_event_cb(drvAdasCanvas, drawAdasCanvasCb, LV_EVENT_DRAW_MAIN, nullptr);
 
   lv_obj_t *adasBar = makeCard(centerCard, 10, 322, 232, 30, pal().surface, 8);
-  drvAdasFooter = makeLabel(adasBar, "PARKED  |  READY TO DRIVE", FONT_XS, pal().cyan, 14, 7);
+  drvAdasFooter = makeLabel(adasBar, "PARKED  |  SHIFT TO D OR DEMO", FONT_XS, pal().cyan, 14, 7);
 
+  // Right Top: Mini Live Navigation Card
   lv_obj_t *navCard = makeCard(pageContainer, 534, 6, 254, 106);
   lv_obj_add_flag(navCard, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(navCard, [](lv_event_t *e) { selectPage(PAGE_NAV); }, LV_EVENT_CLICKED, nullptr);
@@ -1396,10 +1605,11 @@ static void buildPageDrive() {
   drvNavArrowBox = makeCard(navCard, 12, 16, 48, 48, pal().surfaceAlt, 12);
   lv_obj_add_event_cb(drvNavArrowBox, drawNavArrowCb, LV_EVENT_DRAW_MAIN, nullptr);
 
-  drvNavDistLbl   = makeLabel(navCard, "250 m", FONT_LG, pal().text, 70, 14);
-  drvNavStreetLbl = makeLabel(navCard, vs.navStreet, FONT_SM, pal().muted, 70, 40, 174);
-  drvNavEtaLbl    = makeLabel(navCard, "16 min  |  11.4 km", FONT_XS, pal().green, 12, 78, 232);
+  drvNavDistLbl   = makeLabel(navCard, "Navigation Ready", FONT_MD, pal().text, 70, 16, 174);
+  drvNavStreetLbl = makeLabel(navCard, vs.navStreet, FONT_XS, pal().muted, 70, 42, 174);
+  drvNavEtaLbl    = makeLabel(navCard, "Tap for HUD & Phone Calls", FONT_XS, pal().green, 12, 78, 232);
 
+  // Right Middle: Mini Live Phone Media Card
   lv_obj_t *medCard = makeCard(pageContainer, 534, 120, 254, 124);
   makeLabel(medCard, LV_SYMBOL_AUDIO "  NOW PLAYING", FONT_XS, VISTEON_ORANGE, 14, 10);
   drvMediaTitle  = makeLabel(medCard, vs.mediaTitle, FONT_MD, pal().text, 14, 28, 226);
@@ -1419,13 +1629,14 @@ static void buildPageDrive() {
                            92, 82, 70, 32, [](lv_event_t *e) {
     vs.mediaPlaying = !vs.mediaPlaying;
     sendBlePacket(vs.mediaPlaying ? "CMD:MEDIA:PLAY" : "CMD:MEDIA:PAUSE");
-    if (drvMediaPlayLbl) lv_label_set_text(drvMediaPlayLbl, vs.mediaPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+    if (drvMediaPlayLbl) setLabelIfChanged(drvMediaPlayLbl, vs.mediaPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
   }, nullptr, VISTEON_ORANGE, 0x06090F);
   drvMediaPlayLbl = lv_obj_get_child(pBtn, 0);
   makeBtn(medCard, LV_SYMBOL_NEXT, 172, 82, 68, 32, [](lv_event_t *e) {
     sendBlePacket("CMD:MEDIA:NEXT");
   });
 
+  // Right Bottom: EV Energy & Drive Modes
   lv_obj_t *evCard = makeCard(pageContainer, 534, 252, 254, 116);
   drvSocLbl = makeLabel(evCard, LV_SYMBOL_CHARGE " 84%   |   412 km", FONT_SM, pal().text, 14, 10);
 
@@ -1460,98 +1671,303 @@ static void buildPageDrive() {
 }
 
 // -----------------------------------------------------------------------------
-// Page 2: NAV / HUD & Phone Companion
+// Page 2: NAV / HUD (Full-Height) & Reactive Hands-Free Call Companion
 // -----------------------------------------------------------------------------
-static void applyRoutePreset(int idx) {
-  if (idx == 0) {
-    vs.navDir = NAV_RIGHT; vs.navDistM = 250; vs.navEtaMin = 16; vs.navRemKm = 11.4f;
-    strncpy(vs.navStreet, "Outer Ring Expressway", sizeof(vs.navStreet) - 1);
-    strncpy(vs.navDest, "Visteon Tech Park", sizeof(vs.navDest) - 1);
-  } else if (idx == 1) {
-    vs.navDir = NAV_STRAIGHT; vs.navDistM = 850; vs.navEtaMin = 38; vs.navRemKm = 31.2f;
-    strncpy(vs.navStreet, "NH-44 Airport Corridor", sizeof(vs.navStreet) - 1);
-    strncpy(vs.navDest, "BLR Airport T2", sizeof(vs.navDest) - 1);
-  } else {
-    vs.navDir = NAV_LEFT; vs.navDistM = 140; vs.navEtaMin = 22; vs.navRemKm = 9.8f;
-    strncpy(vs.navStreet, "MG Road Boulevard", sizeof(vs.navStreet) - 1);
-    strncpy(vs.navDest, "City Center Plaza", sizeof(vs.navDest) - 1);
+static void refreshNavHudCard() {
+  if (currentPage != PAGE_NAV) return;
+
+  if (navBigArrowBox) {
+    lv_obj_set_style_border_color(navBigArrowBox, lv_color_hex(vs.navActive ? pal().green : pal().border), 0);
+    lv_obj_set_style_border_width(navBigArrowBox, vs.navActive ? 2 : 1, 0);
+    lv_obj_invalidate(navBigArrowBox);
   }
-  vs.navRoutePct = 20;
-  triggerAlert("ROUTE GUIDANCE UPDATED", pal().green, 2500);
-  if (navBigArrowBox) lv_obj_invalidate(navBigArrowBox);
+
+  if (navStatusBadge && navStatusLbl) {
+    lv_obj_set_style_bg_color(navStatusBadge, lv_color_hex(vs.navActive ? pal().green : pal().surfaceAlt), 0);
+    lv_obj_set_style_text_color(navStatusLbl, lv_color_hex(vs.navActive ? 0x06090F : pal().muted), 0);
+    setLabelIfChanged(navStatusLbl, vs.navActive ? "LIVE MAPS" : "STANDBY");
+  }
+
+  if (navBigDistLbl) {
+    if (vs.navActive) {
+      char dBuf[24];
+      formatDistance(dBuf, sizeof(dBuf), vs.navDistM);
+      lv_obj_set_style_text_font(navBigDistLbl, FONT_HERO, 0);
+      lv_obj_set_style_text_color(navBigDistLbl, lv_color_hex(pal().text), 0);
+      setLabelIfChanged(navBigDistLbl, dBuf);
+    } else {
+      lv_obj_set_style_text_font(navBigDistLbl, FONT_XL, 0);
+      lv_obj_set_style_text_color(navBigDistLbl, lv_color_hex(pal().text), 0);
+      setLabelIfChanged(navBigDistLbl, "Nav Ready");
+    }
+  }
+
+  if (navBigActionLbl) {
+    if (vs.navActive) {
+      const char *act[4] = {"CONTINUE STRAIGHT", "TURN RIGHT", "TURN LEFT", "MAKE U-TURN"};
+      setLabelIfChanged(navBigActionLbl, act[vs.navDir]);
+      lv_obj_set_style_text_color(navBigActionLbl, lv_color_hex(pal().green), 0);
+    } else {
+      setLabelIfChanged(navBigActionLbl, bleConnected ? "WAITING FOR ROUTE" : "CONNECT PHONE APP");
+      lv_obj_set_style_text_color(navBigActionLbl, lv_color_hex(pal().muted), 0);
+    }
+  }
+
+  if (navBigStreetLbl) {
+    setLabelIfChanged(navBigStreetLbl, vs.navStreet);
+    lv_obj_set_style_text_color(navBigStreetLbl, lv_color_hex(vs.navActive ? pal().text : pal().muted), 0);
+  }
+
+  if (navProgBar) {
+    lv_bar_set_value(navProgBar, vs.navActive ? vs.navRoutePct : 0, LV_ANIM_OFF);
+  }
+  if (navProgPctLbl) {
+    char pBuf[12];
+    if (vs.navActive) snprintf(pBuf, sizeof(pBuf), "%d%%", vs.navRoutePct);
+    else              snprintf(pBuf, sizeof(pBuf), "--");
+    setLabelIfChanged(navProgPctLbl, pBuf);
+  }
+
+  if (navEtaValLbl && navEtaSubLbl) {
+    if (vs.navActive) {
+      char eBuf[20];
+      formatEta(eBuf, sizeof(eBuf), vs.navEtaMin);
+      setLabelIfChanged(navEtaValLbl, eBuf);
+      lv_obj_set_style_text_color(navEtaValLbl, lv_color_hex(pal().green), 0);
+      setLabelIfChanged(navEtaSubLbl, "Est. Arrival");
+    } else {
+      setLabelIfChanged(navEtaValLbl, "--");
+      lv_obj_set_style_text_color(navEtaValLbl, lv_color_hex(pal().muted), 0);
+      setLabelIfChanged(navEtaSubLbl, "No active route");
+    }
+  }
+
+  if (navRemValLbl && navRemSubLbl) {
+    if (vs.navActive) {
+      char rBuf[20];
+      if (vs.navRemKm >= 100.0f) snprintf(rBuf, sizeof(rBuf), "%.0f km", vs.navRemKm);
+      else                       snprintf(rBuf, sizeof(rBuf), "%.1f km", vs.navRemKm);
+      setLabelIfChanged(navRemValLbl, rBuf);
+      lv_obj_set_style_text_color(navRemValLbl, lv_color_hex(pal().cyan), 0);
+      setLabelIfChanged(navRemSubLbl, "Distance left");
+    } else {
+      setLabelIfChanged(navRemValLbl, "--");
+      lv_obj_set_style_text_color(navRemValLbl, lv_color_hex(pal().muted), 0);
+      setLabelIfChanged(navRemSubLbl, "Start in Maps");
+    }
+  }
+
+  if (navDestValLbl) {
+    setLabelIfChanged(navDestValLbl, vs.navActive ? vs.navDest : "Google Maps\nCompanion");
+    lv_obj_set_style_text_color(navDestValLbl, lv_color_hex(vs.navActive ? pal().text : pal().muted), 0);
+  }
+
+  vs.navDirty = false;
+}
+
+static void refreshNavCallCard() {
+  if (currentPage != PAGE_NAV) return;
+
+  const bool ringing = vs.callActive && !vs.callAnswered;
+  const bool active  = vs.callActive && vs.callAnswered;
+
+  if (navCallCard) {
+    uint32_t bCol = pal().border;
+    int bWidth = 1;
+    if (ringing) {
+      bCol = blinkState ? 0x10B981 : 0x047857;
+      bWidth = 2;
+    } else if (active) {
+      bCol = pal().green;
+      bWidth = 2;
+    }
+    lv_obj_set_style_border_color(navCallCard, lv_color_hex(bCol), 0);
+    lv_obj_set_style_border_width(navCallCard, bWidth, 0);
+  }
+
+  if (navCallStatusLbl) {
+    const char *st = ringing ? "INCOMING CALL..." : (active ? "CALL IN PROGRESS" : "HANDS-FREE CALLS");
+    setLabelIfChanged(navCallStatusLbl, st);
+    lv_obj_set_style_text_color(navCallStatusLbl, lv_color_hex(vs.callActive ? pal().green : pal().cyan), 0);
+  }
+
+  if (navCallerLbl) {
+    setLabelIfChanged(navCallerLbl, vs.callActive ? vs.callerName : "Ready for Phone Calls");
+  }
+
+  if (navCallSubLbl) {
+    if (ringing) {
+      setLabelIfChanged(navCallSubLbl, "Tap ACCEPT or HANDS-FREE for loudspeaker");
+      lv_obj_set_style_text_color(navCallSubLbl, lv_color_hex(pal().amber), 0);
+    } else if (active) {
+      setLabelIfChanged(navCallSubLbl, vs.callSpeaker ? "Audio Route: Loudspeaker (Hands-Free)" : "Audio Route: Phone Earpiece");
+      lv_obj_set_style_text_color(navCallSubLbl, lv_color_hex(vs.callSpeaker ? pal().cyan : pal().muted), 0);
+    } else {
+      setLabelIfChanged(navCallSubLbl, bleConnected ? "BLE Call Monitor Active" : "Waiting for Companion App");
+      lv_obj_set_style_text_color(navCallSubLbl, lv_color_hex(pal().muted), 0);
+    }
+  }
+
+  if (navPhoneBattLbl) {
+    char bBuf[20];
+    if (vs.phoneBattery >= 0) snprintf(bBuf, sizeof(bBuf), "Phone: %d%%", vs.phoneBattery);
+    else                      snprintf(bBuf, sizeof(bBuf), "Phone: --");
+    setLabelIfChanged(navPhoneBattLbl, bBuf);
+  }
+
+  if (navSpeakerBtn && navSpeakerBtnLbl) {
+    if (ringing) {
+      lv_obj_set_style_bg_color(navSpeakerBtn, lv_color_hex(pal().cyan), 0);
+      lv_obj_set_style_text_color(navSpeakerBtnLbl, lv_color_hex(0x06090F), 0);
+      setLabelIfChanged(navSpeakerBtnLbl, LV_SYMBOL_VOLUME_MAX " HANDSFREE");
+    } else if (active && vs.callSpeaker) {
+      lv_obj_set_style_bg_color(navSpeakerBtn, lv_color_hex(VISTEON_ORANGE), 0);
+      lv_obj_set_style_text_color(navSpeakerBtnLbl, lv_color_hex(0x06090F), 0);
+      setLabelIfChanged(navSpeakerBtnLbl, LV_SYMBOL_VOLUME_MAX " SPKR ON");
+    } else {
+      lv_obj_set_style_bg_color(navSpeakerBtn, lv_color_hex(pal().surfaceAlt), 0);
+      lv_obj_set_style_text_color(navSpeakerBtnLbl, lv_color_hex(pal().text), 0);
+      setLabelIfChanged(navSpeakerBtnLbl, LV_SYMBOL_VOLUME_MAX " SPEAKER");
+    }
+  }
+
+  vs.callDirty = false;
 }
 
 static void buildPageNav() {
-  lv_obj_t *hudCard = makeCard(pageContainer, 12, 6, 452, 220);
+  // Left Full-Height Card: Upgraded Heads-Up Navigation (452 x 362)
+  lv_obj_t *hudCard = makeCard(pageContainer, 12, 6, 452, 362);
   makeLabel(hudCard, LV_SYMBOL_GPS "  HEADS-UP NAVIGATION", FONT_XS, pal().green, 18, 14);
 
-  navBigArrowBox = makeCard(hudCard, 18, 42, 114, 114, pal().surfaceAlt, 18);
+  navStatusBadge = makeCard(hudCard, 344, 10, 90, 22, pal().surfaceAlt, 11);
+  lv_obj_set_style_border_width(navStatusBadge, 0, 0);
+  navStatusLbl = lv_label_create(navStatusBadge);
+  lv_label_set_text(navStatusLbl, "STANDBY");
+  lv_obj_set_style_text_font(navStatusLbl, FONT_XS, 0);
+  lv_obj_set_style_text_color(navStatusLbl, lv_color_hex(pal().muted), 0);
+  lv_obj_center(navStatusLbl);
+
+  navBigArrowBox = makeCard(hudCard, 18, 44, 150, 150, pal().surfaceAlt, 22);
   lv_obj_add_event_cb(navBigArrowBox, drawNavArrowCb, LV_EVENT_DRAW_MAIN, nullptr);
 
-  navBigDistLbl   = makeLabel(hudCard, "250 m", FONT_XL, pal().text, 148, 44);
-  navBigActionLbl = makeLabel(hudCard, "TURN RIGHT", FONT_MD, pal().green, 148, 82);
-  navBigStreetLbl = makeLabel(hudCard, vs.navStreet, FONT_MD, pal().muted, 148, 112, 290);
+  navBigDistLbl   = makeLabel(hudCard, "Nav Ready", FONT_XL, pal().text, 184, 46, 250);
+  navBigActionLbl = makeLabel(hudCard, "WAITING FOR ROUTE", FONT_LG, pal().muted, 184, 104, 250);
+
+  navBigStreetLbl = makeLabel(hudCard, vs.navStreet, FONT_MD, pal().muted, 184, 134, 250);
+  lv_label_set_long_mode(navBigStreetLbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_height(navBigStreetLbl, 60);
+
+  makeLabel(hudCard, "ROUTE PROGRESS", FONT_XS, pal().muted, 18, 208);
+  navProgPctLbl = makeLabel(hudCard, "--", FONT_XS, pal().cyan, 374, 208, 60);
+  lv_obj_set_style_text_align(navProgPctLbl, LV_TEXT_ALIGN_RIGHT, 0);
 
   navProgBar = lv_bar_create(hudCard);
-  lv_obj_set_pos(navProgBar, 18, 174);
-  lv_obj_set_size(navProgBar, 416, 8);
-  lv_bar_set_value(navProgBar, vs.navRoutePct, LV_ANIM_OFF);
+  lv_obj_set_pos(navProgBar, 18, 228);
+  lv_obj_set_size(navProgBar, 416, 10);
+  lv_bar_set_value(navProgBar, 0, LV_ANIM_OFF);
+  lv_obj_set_style_radius(navProgBar, 5, LV_PART_MAIN);
+  lv_obj_set_style_radius(navProgBar, 5, LV_PART_INDICATOR);
   lv_obj_set_style_bg_color(navProgBar, lv_color_hex(pal().surfaceAlt), LV_PART_MAIN);
   lv_obj_set_style_bg_color(navProgBar, lv_color_hex(pal().green), LV_PART_INDICATOR);
 
-  navEtaDetailLbl = makeLabel(hudCard, "Dest: Visteon Tech Park  |  16 min  |  11.4 km",
-                              FONT_XS, pal().cyan, 18, 190, 416);
+  // Bottom Trio Telemetry Cards
+  lv_obj_t *etaBox = makeCard(hudCard, 18, 252, 132, 96, pal().surfaceDeep, 12);
+  makeLabel(etaBox, "ETA", FONT_XS, pal().muted, 12, 10);
+  navEtaValLbl = makeLabel(etaBox, "--", FONT_XL, pal().muted, 12, 34, 108);
+  navEtaSubLbl = makeLabel(etaBox, "No active route", FONT_XS, pal().muted, 12, 72, 108);
 
-  lv_obj_t *destCard = makeCard(pageContainer, 12, 234, 452, 134);
-  makeLabel(destCard, "QUICK DESTINATIONS", FONT_XS, pal().muted, 18, 14);
+  lv_obj_t *remBox = makeCard(hudCard, 160, 252, 132, 96, pal().surfaceDeep, 12);
+  makeLabel(remBox, "REMAINING", FONT_XS, pal().muted, 12, 10);
+  navRemValLbl = makeLabel(remBox, "--", FONT_XL, pal().muted, 12, 34, 108);
+  navRemSubLbl = makeLabel(remBox, "Start in Maps", FONT_XS, pal().muted, 12, 72, 108);
 
-  makeBtn(destCard, "Visteon Park\n11.4 km", 16, 42, 136, 74,
-          [](lv_event_t *e) { applyRoutePreset(0); }, nullptr, pal().surfaceAlt);
-  makeBtn(destCard, "BLR Airport\n31.2 km", 158, 42, 136, 74,
-          [](lv_event_t *e) { applyRoutePreset(1); }, nullptr, pal().surfaceAlt);
-  makeBtn(destCard, "City Center\n9.8 km", 300, 42, 136, 74,
-          [](lv_event_t *e) { applyRoutePreset(2); }, nullptr, pal().surfaceAlt);
+  lv_obj_t *destBox = makeCard(hudCard, 302, 252, 132, 96, pal().surfaceDeep, 12);
+  makeLabel(destBox, "DESTINATION", FONT_XS, pal().muted, 12, 10);
+  navDestValLbl = makeLabel(destBox, "Google Maps\nCompanion", FONT_SM, pal().muted, 12, 32, 108);
+  lv_label_set_long_mode(navDestValLbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_height(navDestValLbl, 56);
 
-  lv_obj_t *callCard = makeCard(pageContainer, 474, 6, 314, 170);
-  navCallStatusLbl = makeLabel(callCard, "HANDS-FREE CALL CONTROL", FONT_XS, pal().cyan, 18, 14);
-  navPhoneBattLbl  = makeLabel(callCard, "Phone: --", FONT_XS, pal().muted, 210, 14);
-  navCallerLbl     = makeLabel(callCard, vs.callActive ? vs.callerName : "Ready for Phone Calls",
-                               FONT_LG, pal().text, 18, 42, 278);
+  // Right Top: Reactive Incoming Call & Hands-Free Loudspeaker Card
+  navCallCard = makeCard(pageContainer, 474, 6, 314, 152);
+  navCallStatusLbl = makeLabel(navCallCard, "HANDS-FREE CALLS", FONT_XS, pal().cyan, 14, 12);
+  navPhoneBattLbl  = makeLabel(navCallCard, "Phone: --", FONT_XS, pal().muted, 208, 12, 92);
+  lv_obj_set_style_text_align(navPhoneBattLbl, LV_TEXT_ALIGN_RIGHT, 0);
 
-  makeBtn(callCard, LV_SYMBOL_CALL " ACCEPT", 16, 98, 92, 50, [](lv_event_t *e) {
-    vs.callActive = true;
+  navCallerLbl  = makeLabel(navCallCard, "Ready for Phone Calls", FONT_LG, pal().text, 14, 36, 286);
+  navCallSubLbl = makeLabel(navCallCard, "BLE Call Monitor Active", FONT_XS, pal().muted, 14, 66, 286);
+
+navAcceptBtn = makeBtn(navCallCard, LV_SYMBOL_CALL " ACCEPT", 12, 94, 88, 44, [](lv_event_t *e) {
+    vs.callActive   = true;
     vs.callAnswered = true;
+    vs.callSpeaker  = false;
+    vs.callDirty    = true;
     sendBlePacket("CMD:CALL:ACCEPT");
-    triggerAlert("CALL ACCEPTED", pal().green, 2500);
+    triggerAlert("ACCEPTING CALL...", pal().green, 2500);
+    refreshNavCallCard();
   }, nullptr, pal().green, 0x06090F);
 
-  makeBtn(callCard, LV_SYMBOL_CLOSE " END", 114, 98, 84, 50, [](lv_event_t *e) {
-    vs.callActive = false;
+  navSpeakerBtn = makeBtn(navCallCard, LV_SYMBOL_VOLUME_MAX " SPEAKER", 106, 94, 108, 44, [](lv_event_t *e) {
+    if (!vs.callAnswered) {
+      vs.callActive   = true;
+      vs.callAnswered = true;
+      vs.callSpeaker  = true;
+      vs.callDirty    = true;
+      sendBlePacket("CMD:CALL:ACCEPT_SPEAKER");
+      triggerAlert("ANSWERING ON LOUDSPEAKER...", pal().cyan, 2800);
+    } else {
+      vs.callSpeaker = !vs.callSpeaker;
+      vs.callDirty   = true;
+      sendBlePacket(vs.callSpeaker ? "CMD:CALL:SPEAKER:ON" : "CMD:CALL:SPEAKER:OFF");
+      triggerAlert(vs.callSpeaker ? "LOUDSPEAKER ON" : "LOUDSPEAKER OFF",
+                   vs.callSpeaker ? VISTEON_ORANGE : pal().muted, 2200);
+    }
+    refreshNavCallCard();
+  }, nullptr, pal().surfaceAlt, pal().text);
+  navSpeakerBtnLbl = lv_obj_get_child(navSpeakerBtn, 0);
+
+  navEndBtn = makeBtn(navCallCard, LV_SYMBOL_CLOSE " END", 220, 94, 82, 44, [](lv_event_t *e) {
+    vs.callActive   = false;
     vs.callAnswered = false;
+    vs.callSpeaker  = false;
+    vs.callDirty    = true;
     strncpy(vs.callerName, "No Active Call", sizeof(vs.callerName) - 1);
+    vs.callerName[sizeof(vs.callerName) - 1] = '\0';
     sendBlePacket("CMD:CALL:DECLINE");
+    triggerAlert("CALL ENDED", pal().muted, 2000);
+    refreshNavCallCard();
   }, nullptr, pal().red, 0xFFFFFF);
 
-  makeBtn(callCard, "SIM CALL", 204, 98, 94, 50, [](lv_event_t *e) {
-    vs.callActive = true;
-    vs.callAnswered = false;
-    strncpy(vs.callerName, "Aditya (Mobile)", sizeof(vs.callerName) - 1);
-    triggerAlert("INCOMING CALL: ADITYA", pal().green, 5000);
-  });
+  // Right Bottom: Scrollable 5-Item Recent Phone Notification Stream
+  lv_obj_t *notifCard = makeCard(pageContainer, 474, 166, 314, 202);
+  makeLabel(notifCard, LV_SYMBOL_BELL "  RECENT NOTIFICATIONS", FONT_XS, pal().amber, 14, 10);
+  navNotifCountLbl = makeLabel(notifCard, "0 / 5", FONT_XS, pal().muted, 258, 10);
 
-  lv_obj_t *notifCard = makeCard(pageContainer, 474, 184, 314, 184);
-  makeLabel(notifCard, LV_SYMBOL_BELL "  NOTIFICATION STREAM", FONT_XS, pal().amber, 18, 14);
-  navNotifLbl = makeLabel(notifCard, vs.notifText, FONT_MD, pal().text, 18, 44, 278);
-  lv_label_set_long_mode(navNotifLbl, LV_LABEL_LONG_WRAP);
+  navNotifList = lv_obj_create(notifCard);
+  lv_obj_set_pos(navNotifList, 10, 30);
+  lv_obj_set_size(navNotifList, 294, 116);
+  lv_obj_set_scroll_dir(navNotifList, LV_DIR_VER);
+  lv_obj_set_style_bg_color(navNotifList, lv_color_hex(pal().surfaceDeep), 0);
+  lv_obj_set_style_border_color(navNotifList, lv_color_hex(pal().border), 0);
+  lv_obj_set_style_border_width(navNotifList, 1, 0);
+  lv_obj_set_style_radius(navNotifList, 10, 0);
+  lv_obj_set_style_pad_all(navNotifList, 6, 0);
+#if LV_USE_FLEX
+  lv_obj_set_flex_flow(navNotifList, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(navNotifList, 6, 0);
+#endif
 
-  makeBtn(notifCard, "DISMISS", 16, 126, 134, 42, [](lv_event_t *e) {
-    strncpy(vs.notifText, "All caught up. No unread alerts.", sizeof(vs.notifText) - 1);
-    if (navNotifLbl) lv_label_set_text(navNotifLbl, vs.notifText);
+  makeBtn(notifCard, "DISMISS", 10, 154, 138, 36, [](lv_event_t *e) {
+    clearNotifications();
+    rebuildNotifList();
   });
-  makeBtn(notifCard, "PING PHONE", 160, 126, 138, 42, [](lv_event_t *e) {
+  makeBtn(notifCard, "PING PHONE", 156, 154, 148, 36, [](lv_event_t *e) {
     sendBlePacket("CMD:PHONE:PING");
     triggerAlert("PINGING PAIRED PHONE...", VISTEON_ORANGE, 3000);
   }, nullptr, VISTEON_ORANGE, 0x06090F);
+
+  refreshNavHudCard();
+  refreshNavCallCard();
+  rebuildNotifList();
 }
 
 // -----------------------------------------------------------------------------
@@ -1608,7 +2024,7 @@ static void buildPageMedia() {
     sendBlePacket(pkt);
   }, LV_EVENT_RELEASED, nullptr);
 
-  medTimeLbl = makeLabel(ctrlCard, "00:00 / 03:50", FONT_XS, pal().muted, 24, 146);
+  medTimeLbl = makeLabel(ctrlCard, "0%  |  Waiting for phone playback", FONT_XS, pal().muted, 24, 146);
 
   makeBtn(ctrlCard, LV_SYMBOL_PREV "  PREV", 24, 174, 124, 52, [](lv_event_t *e) {
     sendBlePacket("CMD:MEDIA:PREV");
@@ -1617,7 +2033,7 @@ static void buildPageMedia() {
                               162, 170, 164, 60, [](lv_event_t *e) {
     vs.mediaPlaying = !vs.mediaPlaying;
     sendBlePacket(vs.mediaPlaying ? "CMD:MEDIA:PLAY" : "CMD:MEDIA:PAUSE");
-    if (medPlayBtnLbl) lv_label_set_text(medPlayBtnLbl, vs.mediaPlaying ? LV_SYMBOL_PAUSE "  PAUSE" : LV_SYMBOL_PLAY "  PLAY");
+    if (medPlayBtnLbl) setLabelIfChanged(medPlayBtnLbl, vs.mediaPlaying ? LV_SYMBOL_PAUSE "  PAUSE" : LV_SYMBOL_PLAY "  PLAY");
   }, nullptr, VISTEON_ORANGE, 0x06090F, 14);
   medPlayBtnLbl = lv_obj_get_child(playBtn, 0);
   makeBtn(ctrlCard, "NEXT  " LV_SYMBOL_NEXT, 340, 174, 124, 52, [](lv_event_t *e) {
@@ -1683,7 +2099,7 @@ static void refreshVehicleWidgets() {
     if (!vehTpmsLbl[i]) continue;
     char buf[24];
     snprintf(buf, sizeof(buf), "%s\n%.1f PSI", posTag[i], vs.tpms[i]);
-    lv_label_set_text(vehTpmsLbl[i], buf);
+    setLabelIfChanged(vehTpmsLbl[i], buf);
     uint32_t c = (vs.tpms[i] < 29.0f) ? pal().red : ((vs.tpms[i] < 32.0f) ? pal().amber : pal().green);
     lv_obj_set_style_text_color(vehTpmsLbl[i], lv_color_hex(c), 0);
   }
@@ -1692,24 +2108,34 @@ static void refreshVehicleWidgets() {
   if (vehTrunkBtn) lv_obj_set_style_bg_color(vehTrunkBtn, lv_color_hex(vs.trunkOpen ? VISTEON_ORANGE : pal().surfaceAlt), 0);
 
   if (vehDrvTempLbl) {
-    lv_label_set_text_fmt(vehDrvTempLbl, "%d C", vs.tempDriver);
+    char tBuf[12];
+    snprintf(tBuf, sizeof(tBuf), "%d C", vs.tempDriver);
+    setLabelIfChanged(vehDrvTempLbl, tBuf);
     lv_obj_set_style_text_color(vehDrvTempLbl, lv_color_hex(vs.tempDriver >= 24 ? VISTEON_ORANGE : pal().cyan), 0);
   }
   if (vehPasTempLbl) {
-    lv_label_set_text_fmt(vehPasTempLbl, "%d C", vs.tempPassenger);
+    char tBuf[12];
+    snprintf(tBuf, sizeof(tBuf), "%d C", vs.tempPassenger);
+    setLabelIfChanged(vehPasTempLbl, tBuf);
     lv_obj_set_style_text_color(vehPasTempLbl, lv_color_hex(vs.tempPassenger >= 24 ? VISTEON_ORANGE : pal().cyan), 0);
   }
-  if (vehFanLbl)     lv_label_set_text_fmt(vehFanLbl, "FAN LVL %d", vs.fanSpeed);
+  if (vehFanLbl) {
+    char fBuf[16];
+    snprintf(fBuf, sizeof(fBuf), "FAN LVL %d", vs.fanSpeed);
+    setLabelIfChanged(vehFanLbl, fBuf);
+  }
   if (vehAcBtn)      lv_obj_set_style_bg_color(vehAcBtn, lv_color_hex(vs.acOn ? pal().cyan : pal().surfaceAlt), 0);
   if (vehAutoBtn)    lv_obj_set_style_bg_color(vehAutoBtn, lv_color_hex(vs.autoClimate ? pal().green : pal().surfaceAlt), 0);
   if (vehDefrostBtn) lv_obj_set_style_bg_color(vehDefrostBtn, lv_color_hex(vs.defrostOn ? VISTEON_ORANGE : pal().surfaceAlt), 0);
   if (vehSeatBtn) {
+    char sBuf[12];
+    snprintf(sBuf, sizeof(sBuf), "SEAT %d", vs.seatHeat);
     lv_obj_set_style_bg_color(vehSeatBtn, lv_color_hex(vs.seatHeat > 0 ? pal().red : pal().surfaceAlt), 0);
-    lv_label_set_text_fmt(lv_obj_get_child(vehSeatBtn, 0), "SEAT %d", vs.seatHeat);
+    setLabelIfChanged(lv_obj_get_child(vehSeatBtn, 0), sBuf);
   }
   if (vehRegenBtn) {
     const char *rTxt[3] = {"REGEN: LOW", "REGEN: STD", "ONE-PEDAL"};
-    lv_label_set_text(lv_obj_get_child(vehRegenBtn, 0), rTxt[vs.regenLevel]);
+    setLabelIfChanged(lv_obj_get_child(vehRegenBtn, 0), rTxt[vs.regenLevel]);
   }
 }
 
@@ -1921,6 +2347,7 @@ static void buildPageConnect() {
   lv_obj_add_flag(termBox, LV_OBJ_FLAG_SCROLLABLE);
   conBleLogLbl = makeLabel(termBox, "", FONT_XS, pal().text, 10, 8, 326);
   lv_label_set_long_mode(conBleLogLbl, LV_LABEL_LONG_WRAP);
+  bleLogDirty = true;
 }
 
 // -----------------------------------------------------------------------------
@@ -1964,7 +2391,7 @@ static void buildPageSystem() {
   lv_obj_t *uBtn = makeBtn(setCard, vs.useMph ? "UNITS: MPH (IMPERIAL)" : "UNITS: KM/H (METRIC)",
                            16, 40, 300, 42, [](lv_event_t *e) {
     vs.useMph = !vs.useMph;
-    if (sysUnitBtnLbl) lv_label_set_text(sysUnitBtnLbl, vs.useMph ? "UNITS: MPH (IMPERIAL)" : "UNITS: KM/H (METRIC)");
+    if (sysUnitBtnLbl) setLabelIfChanged(sysUnitBtnLbl, vs.useMph ? "UNITS: MPH (IMPERIAL)" : "UNITS: KM/H (METRIC)");
     triggerAlert(vs.useMph ? "SWITCHED TO MPH" : "SWITCHED TO KM/H", pal().cyan, 2000);
   });
   sysUnitBtnLbl = lv_obj_get_child(uBtn, 0);
@@ -2030,6 +2457,9 @@ static void buildShell() {
   lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
   lv_obj_set_style_pad_all(scr, 0, 0);
 
+  lastPillBgHex  = 0xFFFFFFFF;
+  lastPillTxtHex = 0xFFFFFFFF;
+
   topBar = lv_obj_create(scr);
   lv_obj_set_pos(topBar, 0, 0);
   lv_obj_set_size(topBar, 800, 46);
@@ -2049,11 +2479,20 @@ static void buildShell() {
   makeLabel(topBar, "VISTEON", FONT_MD, pal().text, 52, 13);
   makeLabel(topBar, "LUNET", FONT_XS, VISTEON_ORANGE, 128, 16);
 
+  // Interactive Center Dynamic Pill (Tapping opens NAV / PHONE for Calls & Alerts)
   dynamicPill = makeCard(topBar, 200, 6, 396, 34, pal().surface, 17);
+  lv_obj_add_flag(dynamicPill, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(dynamicPill, [](lv_event_t *e) {
+    if (currentPage != PAGE_NAV) selectPage(PAGE_NAV);
+  }, LV_EVENT_CLICKED, nullptr);
+
   dynamicPillLabel = lv_label_create(dynamicPill);
-  lv_label_set_text(dynamicPillLabel, "12:00 PM   |   Sat, 21 Nov   |   27C Clear");
+  lv_label_set_text(dynamicPillLabel, "12:00 PM   |   Sat, 21 Nov   |   Weather --");
   lv_obj_set_style_text_font(dynamicPillLabel, FONT_SM, 0);
   lv_obj_set_style_text_color(dynamicPillLabel, lv_color_hex(pal().text), 0);
+  lv_obj_set_width(dynamicPillLabel, 376);
+  lv_obj_set_style_text_align(dynamicPillLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_long_mode(dynamicPillLabel, LV_LABEL_LONG_DOT);
   lv_obj_center(dynamicPillLabel);
 
   topWifiIcon    = makeLabel(topBar, LV_SYMBOL_WIFI, FONT_SM, pal().muted, 610, 15);
@@ -2111,6 +2550,7 @@ static void appendBleLog(const char *prefix, const char *msg) {
     bleLogCount = 7;
   }
   snprintf(bleLogLines[bleLogCount++], sizeof(bleLogLines[0]), "[%s] %.72s", prefix, msg);
+  bleLogDirty = true;
 }
 
 static void enqueueBleRx(const char *msg) {
@@ -2239,12 +2679,23 @@ static void processBleCommand(const char *command) {
     vs.dateStr[sizeof(vs.dateStr) - 1] = '\0';
     bleTimeOverride = true;
   } else if (cmd.startsWith("WEATHER:")) {
-    strncpy(vs.weatherStr, cmd.substring(8).c_str(), sizeof(vs.weatherStr) - 1);
-    vs.weatherStr[sizeof(vs.weatherStr) - 1] = '\0';
+    // Supports "WEATHER:28C Clear" or "WEATHER:28|Clear"
+    String payload = cmd.substring(8);
+    payload.trim();
+    String parts[2];
+    int n = splitPipes(payload, parts, 2);
+    if (n == 2) {
+      snprintf(vs.weatherStr, sizeof(vs.weatherStr), "%sC %s", parts[0].c_str(), parts[1].c_str());
+    } else if (payload.length() > 0) {
+      strncpy(vs.weatherStr, payload.c_str(), sizeof(vs.weatherStr) - 1);
+      vs.weatherStr[sizeof(vs.weatherStr) - 1] = '\0';
+    }
   } else if (cmd.startsWith("PBATT:")) {
     vs.phoneBattery = clampInt((int)cmd.substring(6).toInt(), 0, 100);
+    vs.callDirty = true;
   } else if (cmd.startsWith("BATTERY:")) {
     vs.phoneBattery = clampInt((int)cmd.substring(8).toInt(), 0, 100);
+    vs.callDirty = true;
   } else if (cmd.startsWith("SPEED:")) {
     vs.demoDrive = false;
     float spd = clampFloat(cmd.substring(6).toFloat(), 0.0f, 220.0f);
@@ -2254,7 +2705,11 @@ static void processBleCommand(const char *command) {
     refreshDriveStyles();
   } else if (cmd.startsWith("LIMIT:")) {
     vs.speedLimitKmh = clampInt((int)cmd.substring(6).toInt(), 20, 200);
-    if (drvSpeedLimitLbl) lv_label_set_text_fmt(drvSpeedLimitLbl, "%d", displayLimit());
+    if (drvSpeedLimitLbl) {
+      char lBuf[12];
+      snprintf(lBuf, sizeof(lBuf), "%d", displayLimit());
+      setLabelIfChanged(drvSpeedLimitLbl, lBuf);
+    }
   } else if (cmd.startsWith("GEAR:")) {
     String g = cmd.substring(5);
     g.toUpperCase();
@@ -2274,53 +2729,72 @@ static void processBleCommand(const char *command) {
     refreshDriveStyles();
   } else if (cmd.startsWith("SOC:")) {
     vs.socPercent = clampFloat(cmd.substring(4).toFloat(), 0.0f, 100.0f);
+  } else if (cmd.equalsIgnoreCase("NOTIF_CLEAR")) {
+    clearNotifications();
+  } else if (cmd.startsWith("NOTIF_HIST:")) {
+    String payload = cmd.substring(11);
+    String parts[2];
+    int n = splitPipes(payload, parts, 2);
+    if (n == 2) pushNotification(parts[0].c_str(), parts[1].c_str(), false);
+    else        pushNotification("Phone", payload.c_str(), false);
   } else if (cmd.startsWith("NOTIF:")) {
     String payload = cmd.substring(6);
     String parts[2];
     int n = splitPipes(payload, parts, 2);
-    if (n == 2) {
-      snprintf(vs.notifText, sizeof(vs.notifText), "%s: %s", parts[0].c_str(), parts[1].c_str());
-    } else {
-      strncpy(vs.notifText, payload.c_str(), sizeof(vs.notifText) - 1);
-      vs.notifText[sizeof(vs.notifText) - 1] = '\0';
-    }
-    triggerAlert(vs.notifText, pal().amber, 4500);
+    if (n == 2) pushNotification(parts[0].c_str(), parts[1].c_str(), true);
+    else        pushNotification("Phone", payload.c_str(), true);
   } else if (cmd.startsWith("CALL:")) {
+    // Supports: CALL:INCOMING|<name>, CALL:RINGING|<name>, CALL:ACTIVE|<name>,
+    //           CALL:OFFHOOK|<name>, CALL:ENDED, CALL:IDLE, CALL:SPEAKER:ON/OFF
     String payload = cmd.substring(5);
     String parts[2];
     int n = splitPipes(payload, parts, 2);
-    if (parts[0].equalsIgnoreCase("INCOMING")) {
-      vs.callActive = true;
+    if (parts[0].equalsIgnoreCase("SPEAKER:ON")) {
+      vs.callSpeaker = true;
+      vs.callDirty   = true;
+    } else if (parts[0].equalsIgnoreCase("SPEAKER:OFF")) {
+      vs.callSpeaker = false;
+      vs.callDirty   = true;
+    } else if (parts[0].equalsIgnoreCase("INCOMING") || parts[0].equalsIgnoreCase("RINGING")) {
+      vs.callActive   = true;
       vs.callAnswered = false;
-      strncpy(vs.callerName, (n == 2 && parts[1].length() > 0) ? parts[1].c_str() : "Unknown Caller", sizeof(vs.callerName) - 1);
+      vs.callSpeaker  = false;
+      vs.callDirty    = true;
+      strncpy(vs.callerName, (n == 2 && parts[1].length() > 0) ? parts[1].c_str() : "Unknown Caller",
+              sizeof(vs.callerName) - 1);
       vs.callerName[sizeof(vs.callerName) - 1] = '\0';
-      char alert[64];
-      snprintf(alert, sizeof(alert), "INCOMING CALL: %s", vs.callerName);
-      triggerAlert(alert, pal().green, 8000);
-    } else if (parts[0].equalsIgnoreCase("ACTIVE")) {
-      vs.callActive = true;
+    } else if (parts[0].equalsIgnoreCase("ACTIVE") || parts[0].equalsIgnoreCase("OFFHOOK")) {
+      vs.callActive   = true;
       vs.callAnswered = true;
+      vs.callDirty    = true;
       if (n == 2 && parts[1].length() > 0) {
         strncpy(vs.callerName, parts[1].c_str(), sizeof(vs.callerName) - 1);
         vs.callerName[sizeof(vs.callerName) - 1] = '\0';
       }
       triggerAlert("CALL CONNECTED", pal().green, 2500);
-    } else if (parts[0].equalsIgnoreCase("ENDED")) {
-      vs.callActive = false;
+    } else if (parts[0].equalsIgnoreCase("ENDED") || parts[0].equalsIgnoreCase("IDLE")) {
+      vs.callActive   = false;
       vs.callAnswered = false;
+      vs.callSpeaker  = false;
+      vs.callDirty    = true;
       strncpy(vs.callerName, "No Active Call", sizeof(vs.callerName) - 1);
       vs.callerName[sizeof(vs.callerName) - 1] = '\0';
       triggerAlert("CALL ENDED", pal().muted, 2000);
-    } else {
-      vs.callActive = true;
+    } else if (payload.length() > 0) {
+      vs.callActive   = true;
       vs.callAnswered = false;
+      vs.callSpeaker  = false;
+      vs.callDirty    = true;
       strncpy(vs.callerName, payload.c_str(), sizeof(vs.callerName) - 1);
       vs.callerName[sizeof(vs.callerName) - 1] = '\0';
-      triggerAlert("INCOMING CALL", pal().green, 6000);
     }
+    if (currentPage == PAGE_NAV) refreshNavCallCard();
   } else if (cmd.startsWith("MEDIA:")) {
+    // Format: MEDIA:<title>|<artist>|<PLAY|PAUSE>|<progress_0_100>|<vol_0_100>
     String parts[5];
     int n = splitPipes(cmd.substring(6), parts, 5);
+    vs.liveMediaSynced = true;
+    vs.lastMediaRxMs   = millis();
     if (n >= 1 && parts[0].length() > 0) {
       strncpy(vs.mediaTitle, parts[0].c_str(), sizeof(vs.mediaTitle) - 1);
       vs.mediaTitle[sizeof(vs.mediaTitle) - 1] = '\0';
@@ -2334,17 +2808,51 @@ static void processBleCommand(const char *command) {
     }
     if (n >= 4) {
       vs.mediaProgress = clampInt((int)parts[3].toInt(), 0, 100);
+      if (drvMediaProg) lv_bar_set_value(drvMediaProg, vs.mediaProgress, LV_ANIM_OFF);
+      if (medProgSlider && !lv_slider_is_dragged(medProgSlider)) {
+        lv_slider_set_value(medProgSlider, vs.mediaProgress, LV_ANIM_OFF);
+      }
     }
     if (n >= 5) {
       vs.mediaVolume = clampInt((int)parts[4].toInt(), 0, 100);
-      if (medVolSlider) lv_slider_set_value(medVolSlider, vs.mediaVolume, LV_ANIM_OFF);
+      if (medVolSlider && !lv_slider_is_dragged(medVolSlider)) {
+        lv_slider_set_value(medVolSlider, vs.mediaVolume, LV_ANIM_OFF);
+      }
     }
-    if (drvMediaPlayLbl) lv_label_set_text(drvMediaPlayLbl, vs.mediaPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
-    if (medPlayBtnLbl)   lv_label_set_text(medPlayBtnLbl, vs.mediaPlaying ? LV_SYMBOL_PAUSE "  PAUSE" : LV_SYMBOL_PLAY "  PLAY");
+    setLabelIfChanged(drvMediaTitle, vs.mediaTitle);
+    setLabelIfChanged(drvMediaArtist, vs.mediaArtist);
+    setLabelIfChanged(medTitleLbl, vs.mediaTitle);
+    setLabelIfChanged(medArtistLbl, vs.mediaArtist);
+    setLabelIfChanged(drvMediaPlayLbl, vs.mediaPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+    setLabelIfChanged(medPlayBtnLbl, vs.mediaPlaying ? LV_SYMBOL_PAUSE "  PAUSE" : LV_SYMBOL_PLAY "  PLAY");
+  } else if (cmd.equalsIgnoreCase("NAV:IDLE")) {
+    vs.navActive   = false;
+    vs.navDir      = NAV_STRAIGHT;
+    vs.navDistM    = 0;
+    vs.navEtaMin   = 0;
+    vs.navRemKm    = 0.0f;
+    vs.navRoutePct = 0;
+    vs.navDirty    = true;
+    strncpy(vs.navStreet, "Start a route in Google Maps on phone", sizeof(vs.navStreet) - 1);
+    vs.navStreet[sizeof(vs.navStreet) - 1] = '\0';
+    strncpy(vs.navDest, "Waiting for Maps", sizeof(vs.navDest) - 1);
+    vs.navDest[sizeof(vs.navDest) - 1] = '\0';
+    if (drvNavArrowBox) lv_obj_invalidate(drvNavArrowBox);
+    if (currentPage == PAGE_NAV) refreshNavHudCard();
   } else if (cmd.startsWith("NAV:")) {
+    // Format: NAV:<STRAIGHT|LEFT|RIGHT|UTURN>|<distM>|<street>|<etaMin>|<remKm>|<optionalDest>
     String payload = cmd.substring(4);
-    String parts[5];
-    int n = splitPipes(payload, parts, 5);
+    String parts[6];
+    int n = splitPipes(payload, parts, 6);
+    vs.navActive = true;
+    vs.navDirty  = true;
+    if (n >= 6 && parts[5].length() > 0) {
+      strncpy(vs.navDest, parts[5].c_str(), sizeof(vs.navDest) - 1);
+    } else {
+      strncpy(vs.navDest, "Google Maps Live", sizeof(vs.navDest) - 1);
+    }
+    vs.navDest[sizeof(vs.navDest) - 1] = '\0';
+
     if (n >= 3) {
       if (parts[0].equalsIgnoreCase("LEFT"))       vs.navDir = NAV_LEFT;
       else if (parts[0].equalsIgnoreCase("RIGHT")) vs.navDir = NAV_RIGHT;
@@ -2356,12 +2864,13 @@ static void processBleCommand(const char *command) {
       vs.navStreet[sizeof(vs.navStreet) - 1] = '\0';
       if (n >= 4) vs.navEtaMin = clampInt((int)parts[3].toInt(), 0, 9999);
       if (n >= 5) vs.navRemKm  = clampFloat(parts[4].toFloat(), 0.0f, 9999.0f);
+      vs.navRoutePct = (vs.navRemKm > 0.1f) ? clampInt(100 - (int)(vs.navRemKm * 3.0f), 10, 95) : 50;
     } else {
       strncpy(vs.navStreet, payload.c_str(), sizeof(vs.navStreet) - 1);
       vs.navStreet[sizeof(vs.navStreet) - 1] = '\0';
     }
     if (drvNavArrowBox) lv_obj_invalidate(drvNavArrowBox);
-    if (navBigArrowBox) lv_obj_invalidate(navBigArrowBox);
+    if (currentPage == PAGE_NAV) refreshNavHudCard();
   }
 }
 
@@ -2450,9 +2959,11 @@ static void stepPhysicsAndAnimations(uint32_t now) {
     }
   }
 
+  bool blinkToggled = false;
   if (now - lastBlinkMs >= 450) {
     lastBlinkMs = now;
     blinkState = !blinkState;
+    blinkToggled = true;
   }
 
   float dt = 0.033f;
@@ -2473,7 +2984,10 @@ static void stepPhysicsAndAnimations(uint32_t now) {
   } else {
     vs.speedKmh = vs.targetSpeedKmh;
   }
+
+  bool prevBraking = vs.braking;
   vs.braking = (diff < -6.0f);
+  if (prevBraking != vs.braking) vs.adasDirty = true;
 
   float targetPower = 0.0f;
   if (vs.gear == 'D' || vs.gear == 'R') {
@@ -2485,7 +2999,10 @@ static void stepPhysicsAndAnimations(uint32_t now) {
   if (vs.gear == 'P' && fabsf(vs.powerKw) < 0.4f) vs.powerKw = 0.0f;
 
   // Overspeed Detection & Full-Screen Pulsing Red Warning Flash
+  bool prevOverspeed = isOverspeed;
   isOverspeed = (vs.speedKmh > (float)vs.speedLimitKmh + 0.5f);
+  if (prevOverspeed != isOverspeed) vs.adasDirty = true;
+
   if (overspeedOverlay) {
     if (isOverspeed && !bootActive && !kbModal) {
       lv_obj_clear_flag(overspeedOverlay, LV_OBJ_FLAG_HIDDEN);
@@ -2494,34 +3011,20 @@ static void stepPhysicsAndAnimations(uint32_t now) {
       lv_opa_t tintOpa   = (lv_opa_t)(8 + (int)(pulse * 34.0f));
       lv_obj_set_style_border_opa(overspeedOverlay, borderOpa, 0);
       lv_obj_set_style_bg_opa(overspeedOverlay, tintOpa, 0);
-    } else {
+    } else if (!lv_obj_has_flag(overspeedOverlay, LV_OBJ_FLAG_HIDDEN)) {
       lv_obj_add_flag(overspeedOverlay, LV_OBJ_FLAG_HIDDEN);
     }
   }
 
-  if (vs.speedKmh > 0.5f) {
+  bool moving = (vs.speedKmh > 0.5f);
+  if (moving) {
     vs.roadPhase = fmodf(vs.roadPhase + (vs.speedKmh * 0.00055f), 1.0f);
     float dKm = (vs.speedKmh / 3600.0f) * dt;
     vs.tripKm += dKm;
     vs.odoKm  += dKm;
   }
 
-  if (vs.demoDrive && vs.speedKmh > 5.0f) {
-    static float navAccumM = 0.0f;
-    navAccumM += (vs.speedKmh / 3.6f) * dt;
-    if (navAccumM >= 5.0f) {
-      vs.navDistM -= (int)navAccumM;
-      navAccumM = 0.0f;
-      if (vs.navDistM <= 10) {
-        vs.navDistM = 450;
-        vs.navDir = (NavArrow)((vs.navDir + 1) % 3);
-        vs.navRoutePct = (vs.navRoutePct + 8) % 96;
-        if (drvNavArrowBox) lv_obj_invalidate(drvNavArrowBox);
-        if (navBigArrowBox) lv_obj_invalidate(navBigArrowBox);
-      }
-    }
-  }
-
+  bool eqActive = vs.mediaPlaying;
   if (vs.mediaPlaying) {
     vs.vinylAngle = fmodf(vs.vinylAngle + 3.2f, 360.0f);
     for (int i = 0; i < 12; ++i) {
@@ -2529,38 +3032,65 @@ static void stepPhysicsAndAnimations(uint32_t now) {
       vs.eqBars[i] += (targetH - vs.eqBars[i]) * 0.35f;
     }
   } else {
-    for (int i = 0; i < 12; ++i) vs.eqBars[i] += (8.0f - vs.eqBars[i]) * 0.15f;
+    for (int i = 0; i < 12; ++i) {
+      if (fabsf(vs.eqBars[i] - 8.0f) > 0.25f) {
+        vs.eqBars[i] += (8.0f - vs.eqBars[i]) * 0.15f;
+        eqActive = true;
+      } else {
+        vs.eqBars[i] = 8.0f;
+      }
+    }
   }
 
   if (currentPage == PAGE_DRIVE) {
-    if (drvSpeedArc) {
-      lv_arc_set_value(drvSpeedArc, (int)vs.speedKmh);
-      uint32_t arcCol = isOverspeed ? (blinkState ? 0xEF4444 : 0x991B1B) : modeAccentColor();
-      lv_obj_set_style_arc_color(drvSpeedArc, lv_color_hex(arcCol), LV_PART_INDICATOR);
-    }
-    if (drvPowerArc) {
-      lv_arc_set_value(drvPowerArc, (int)vs.powerKw);
-      lv_obj_set_style_arc_color(drvPowerArc, lv_color_hex(vs.powerKw < 0 ? pal().green : VISTEON_ORANGE), LV_PART_INDICATOR);
-    }
-    if (drvSpeedVal) {
-      lv_label_set_text_fmt(drvSpeedVal, "%d", displaySpeed());
-      lv_obj_set_style_text_color(drvSpeedVal, lv_color_hex(isOverspeed ? pal().red : pal().text), 0);
-    }
-    if (drvPowerVal) {
-      int pInt = (int)lroundf(vs.powerKw);
-      lv_label_set_text_fmt(drvPowerVal, "%s%d kW", (pInt > 0 ? "+" : ""), pInt);
-      lv_obj_set_style_text_color(drvPowerVal, lv_color_hex(pInt < 0 ? pal().green : pal().muted), 0);
-    }
-    if (drvSpeedLimitBox) {
-      lv_obj_set_style_bg_color(drvSpeedLimitBox, lv_color_hex((isOverspeed && blinkState) ? 0xEF4444 : 0xFFFFFF), 0);
-      if (drvSpeedLimitLbl) {
-        lv_obj_set_style_text_color(drvSpeedLimitLbl, lv_color_hex((isOverspeed && blinkState) ? 0xFFFFFF : 0x0F172A), 0);
+    int curSpd = displaySpeed();
+    int curPwr = (int)lroundf(vs.powerKw);
+
+    if (curSpd != lastShownSpeed || isOverspeed != lastOverspeedVis || (isOverspeed && blinkState != lastBlinkVis)) {
+      if (drvSpeedArc) {
+        lv_arc_set_value(drvSpeedArc, (int)vs.speedKmh);
+        uint32_t arcCol = isOverspeed ? (blinkState ? 0xEF4444 : 0x991B1B) : modeAccentColor();
+        lv_obj_set_style_arc_color(drvSpeedArc, lv_color_hex(arcCol), LV_PART_INDICATOR);
       }
+      if (drvSpeedVal) {
+        char sBuf[12];
+        snprintf(sBuf, sizeof(sBuf), "%d", curSpd);
+        setLabelIfChanged(drvSpeedVal, sBuf);
+        lv_obj_set_style_text_color(drvSpeedVal, lv_color_hex(isOverspeed ? pal().red : pal().text), 0);
+      }
+      if (drvSpeedLimitBox) {
+        lv_obj_set_style_bg_color(drvSpeedLimitBox, lv_color_hex((isOverspeed && blinkState) ? 0xEF4444 : 0xFFFFFF), 0);
+        if (drvSpeedLimitLbl) {
+          lv_obj_set_style_text_color(drvSpeedLimitLbl, lv_color_hex((isOverspeed && blinkState) ? 0xFFFFFF : 0x0F172A), 0);
+        }
+      }
+      lastShownSpeed   = curSpd;
+      lastOverspeedVis = isOverspeed;
+      lastBlinkVis     = blinkState;
     }
-    if (drvAdasCanvas) lv_obj_invalidate(drvAdasCanvas);
+
+    if (curPwr != lastShownPower) {
+      if (drvPowerArc) {
+        lv_arc_set_value(drvPowerArc, curPwr);
+        lv_obj_set_style_arc_color(drvPowerArc, lv_color_hex(curPwr < 0 ? pal().green : VISTEON_ORANGE), LV_PART_INDICATOR);
+      }
+      if (drvPowerVal) {
+        char pBuf[16];
+        snprintf(pBuf, sizeof(pBuf), "%s%d kW", (curPwr > 0 ? "+" : ""), curPwr);
+        setLabelIfChanged(drvPowerVal, pBuf);
+        lv_obj_set_style_text_color(drvPowerVal, lv_color_hex(curPwr < 0 ? pal().green : pal().muted), 0);
+      }
+      lastShownPower = curPwr;
+    }
+
+    bool blinkVisual = (vs.leftBlinker || vs.rightBlinker || vs.hazard) && blinkToggled;
+    if (drvAdasCanvas && (moving || vs.adasDirty || blinkVisual)) {
+      lv_obj_invalidate(drvAdasCanvas);
+      vs.adasDirty = false;
+    }
   } else if (currentPage == PAGE_MEDIA) {
-    if (medDiscCanvas) lv_obj_invalidate(medDiscCanvas);
-    if (medEqCanvas)   lv_obj_invalidate(medEqCanvas);
+    if (vs.mediaPlaying && medDiscCanvas) lv_obj_invalidate(medDiscCanvas);
+    if (eqActive && medEqCanvas)          lv_obj_invalidate(medEqCanvas);
   }
 }
 
@@ -2580,144 +3110,172 @@ static void updateSlowUi(uint32_t now) {
     }
   }
 
-  if (topWifiIcon)    lv_obj_set_style_text_color(topWifiIcon, lv_color_hex(wifiOk ? pal().green : pal().muted), 0);
-  if (topBleIcon)     lv_obj_set_style_text_color(topBleIcon, lv_color_hex(bleConnected ? pal().green : pal().cyan), 0);
-  if (topSupplyLabel) lv_label_set_text_fmt(topSupplyLabel, LV_SYMBOL_CHARGE " %d%%", vs.supplyBattery);
-
-  if (dynamicPill && dynamicPillLabel) {
-    if (isOverspeed) {
-      lv_obj_set_style_bg_color(dynamicPill, lv_color_hex(blinkState ? 0xEF4444 : 0x991B1B), 0);
-      lv_obj_set_style_text_color(dynamicPillLabel, lv_color_hex(0xFFFFFF), 0);
-      char osBuf[64];
-      snprintf(osBuf, sizeof(osBuf), LV_SYMBOL_WARNING "  OVERSPEED  |  LIMIT %d %s",
-               displayLimit(), vs.useMph ? "MPH" : "KM/H");
-      lv_label_set_text(dynamicPillLabel, osBuf);
-    } else if (now < vs.alertUntil && vs.alertText[0]) {
-      lv_obj_set_style_bg_color(dynamicPill, lv_color_hex(vs.alertColor), 0);
-      lv_obj_set_style_text_color(dynamicPillLabel, lv_color_hex(0x06090F), 0);
-      lv_label_set_text(dynamicPillLabel, vs.alertText);
-    } else {
-      lv_obj_set_style_bg_color(dynamicPill, lv_color_hex(pal().surface), 0);
-      lv_obj_set_style_text_color(dynamicPillLabel, lv_color_hex(pal().text), 0);
-      char pillBuf[84];
-      snprintf(pillBuf, sizeof(pillBuf), "%s   |   %s   |   %s", vs.timeStr, vs.dateStr, vs.weatherStr);
-      lv_label_set_text(dynamicPillLabel, pillBuf);
-    }
+  // Persistent Top Bar Icons
+  if (topWifiIcon) lv_obj_set_style_text_color(topWifiIcon, lv_color_hex(wifiOk ? pal().green : pal().muted), 0);
+  if (topBleIcon)  lv_obj_set_style_text_color(topBleIcon, lv_color_hex(bleConnected ? pal().green : pal().cyan), 0);
+  if (topSupplyLabel) {
+    char supBuf[20];
+    snprintf(supBuf, sizeof(supBuf), LV_SYMBOL_CHARGE " %d%%", vs.supplyBattery);
+    setLabelIfChanged(topSupplyLabel, supBuf);
   }
 
+  // Dynamic Pill Priority: Overspeed > Incoming Call (Pulsing Emerald) > Timed Alert > Time | Date | Weather
+  if (dynamicPill && dynamicPillLabel) {
+    uint32_t pillBg  = pal().surface;
+    uint32_t pillTxt = pal().text;
+    char pillBuf[92];
+
+    if (isOverspeed) {
+      pillBg  = blinkState ? 0xEF4444 : 0x991B1B;
+      pillTxt = 0xFFFFFF;
+      snprintf(pillBuf, sizeof(pillBuf), LV_SYMBOL_WARNING "  OVERSPEED  |  LIMIT %d %s",
+               displayLimit(), vs.useMph ? "MPH" : "KM/H");
+    } else if (vs.callActive && !vs.callAnswered) {
+      pillBg  = blinkState ? 0x10B981 : 0x047857;
+      pillTxt = 0xFFFFFF;
+      snprintf(pillBuf, sizeof(pillBuf), LV_SYMBOL_CALL "  INCOMING: %s  (TAP)", vs.callerName);
+    } else if (now < vs.alertUntil && vs.alertText[0]) {
+      pillBg  = vs.alertColor;
+      pillTxt = 0x06090F;
+      snprintf(pillBuf, sizeof(pillBuf), "%s", vs.alertText);
+    } else {
+      snprintf(pillBuf, sizeof(pillBuf), "%s   |   %s   |   %s", vs.timeStr, vs.dateStr, vs.weatherStr);
+    }
+
+    if (pillBg != lastPillBgHex) {
+      lv_obj_set_style_bg_color(dynamicPill, lv_color_hex(pillBg), 0);
+      lastPillBgHex = pillBg;
+    }
+    if (pillTxt != lastPillTxtHex) {
+      lv_obj_set_style_text_color(dynamicPillLabel, lv_color_hex(pillTxt), 0);
+      lastPillTxtHex = pillTxt;
+    }
+    setLabelIfChanged(dynamicPillLabel, pillBuf);
+  }
+
+  // Pause fallback progress drift whenever live phone media packets are actively arriving
   static uint32_t lastProgSec = 0;
-  if (vs.mediaPlaying && now - lastProgSec >= 2000) {
+  bool freshPhoneMedia = vs.liveMediaSynced && ((now - vs.lastMediaRxMs) < 10000);
+  if (vs.mediaPlaying && !freshPhoneMedia && (now - lastProgSec >= 2000)) {
     lastProgSec = now;
     vs.mediaProgress = (vs.mediaProgress + 1) % 101;
   }
 
+  // Active Page Slow Refreshes
   if (currentPage == PAGE_DRIVE) {
     if (drvAdasFooter) {
-      if (vs.gear == 'P') {
-        lv_label_set_text(drvAdasFooter, "PARKED  |  SHIFT TO D OR DEMO");
-      } else if (vs.gear == 'R') {
-        lv_label_set_text(drvAdasFooter, "REVERSE  |  REAR SENSORS ACTIVE");
-      } else if (vs.gear == 'N') {
-        lv_label_set_text(drvAdasFooter, "NEUTRAL  |  COASTING");
+      char fBuf[48];
+      if (vs.gear == 'P')      snprintf(fBuf, sizeof(fBuf), "PARKED  |  SHIFT TO D OR DEMO");
+      else if (vs.gear == 'R') snprintf(fBuf, sizeof(fBuf), "REVERSE  |  REAR SENSORS ACTIVE");
+      else if (vs.gear == 'N') snprintf(fBuf, sizeof(fBuf), "NEUTRAL  |  COASTING");
+      else                     snprintf(fBuf, sizeof(fBuf), "ACC %d  |  LKA ON  |  %dm", displayLimit(), (int)vs.leadDistM);
+      setLabelIfChanged(drvAdasFooter, fBuf);
+    }
+    if (drvNavDistLbl) {
+      if (vs.navActive) {
+        char dBuf[24];
+        formatDistance(dBuf, sizeof(dBuf), vs.navDistM);
+        setLabelIfChanged(drvNavDistLbl, dBuf);
       } else {
-        lv_label_set_text_fmt(drvAdasFooter, "ACC %d  |  LKA ON  |  %dm",
-                              displayLimit(), (int)vs.leadDistM);
+        setLabelIfChanged(drvNavDistLbl, "Navigation Ready");
       }
     }
-    if (drvNavDistLbl)   lv_label_set_text_fmt(drvNavDistLbl, "%d m", vs.navDistM);
-    if (drvNavStreetLbl) lv_label_set_text(drvNavStreetLbl, vs.navStreet);
+    setLabelIfChanged(drvNavStreetLbl, vs.navStreet);
     if (drvNavEtaLbl) {
-      char buf[56];
-      snprintf(buf, sizeof(buf), "%d min  |  %.1f km  |  %s", vs.navEtaMin, vs.navRemKm, vs.navDest);
-      lv_label_set_text(drvNavEtaLbl, buf);
+      if (vs.navActive) {
+        char eBuf[20], buf[72];
+        formatEta(eBuf, sizeof(eBuf), vs.navEtaMin);
+        snprintf(buf, sizeof(buf), "%s  |  %.1f km  |  %s", eBuf, vs.navRemKm, vs.navDest);
+        setLabelIfChanged(drvNavEtaLbl, buf);
+      } else {
+        setLabelIfChanged(drvNavEtaLbl, "Start route in Google Maps");
+      }
     }
-    if (drvMediaTitle)   lv_label_set_text(drvMediaTitle, vs.mediaTitle);
-    if (drvMediaArtist)  lv_label_set_text(drvMediaArtist, vs.mediaArtist);
-    if (drvMediaProg)    lv_bar_set_value(drvMediaProg, vs.mediaProgress, LV_ANIM_OFF);
+    setLabelIfChanged(drvMediaTitle, vs.mediaTitle);
+    setLabelIfChanged(drvMediaArtist, vs.mediaArtist);
+    if (drvMediaProg) lv_bar_set_value(drvMediaProg, vs.mediaProgress, LV_ANIM_OFF);
     if (drvSocLbl) {
       int rangeKm = (int)(vs.socPercent * 4.9f);
-      lv_label_set_text_fmt(drvSocLbl, LV_SYMBOL_CHARGE " %d%%   |   %d %s",
-                            (int)vs.socPercent,
-                            vs.useMph ? (int)(rangeKm * 0.621f) : rangeKm,
-                            vs.useMph ? "mi" : "km");
+      char sBuf[40];
+      snprintf(sBuf, sizeof(sBuf), LV_SYMBOL_CHARGE " %d%%   |   %d %s",
+               (int)vs.socPercent,
+               vs.useMph ? (int)(rangeKm * 0.621f) : rangeKm,
+               vs.useMph ? "mi" : "km");
+      setLabelIfChanged(drvSocLbl, sBuf);
     }
     if (drvSocBar) lv_bar_set_value(drvSocBar, (int)vs.socPercent, LV_ANIM_OFF);
     if (drvEffLbl) {
       char buf[48];
       snprintf(buf, sizeof(buf), "%.1f kWh/100km  |  Trip %.1f km", vs.efficiencyKwh, vs.tripKm);
-      lv_label_set_text(drvEffLbl, buf);
+      setLabelIfChanged(drvEffLbl, buf);
     }
   } else if (currentPage == PAGE_NAV) {
-    if (navBigDistLbl) lv_label_set_text_fmt(navBigDistLbl, "%d m", vs.navDistM);
-    if (navBigActionLbl) {
-      const char *act[4] = {"CONTINUE STRAIGHT", "TURN RIGHT", "TURN LEFT", "MAKE U-TURN"};
-      lv_label_set_text(navBigActionLbl, act[vs.navDir]);
+    if (vs.navDirty) refreshNavHudCard();
+    // Refresh call card when dirty or while pulsing on an incoming call
+    if (vs.callDirty || (vs.callActive && !vs.callAnswered)) {
+      refreshNavCallCard();
     }
-    if (navBigStreetLbl) lv_label_set_text(navBigStreetLbl, vs.navStreet);
-    if (navProgBar)      lv_bar_set_value(navProgBar, vs.navRoutePct, LV_ANIM_OFF);
-    if (navEtaDetailLbl) {
-      char buf[72];
-      snprintf(buf, sizeof(buf), "Dest: %s  |  %d min  |  %.1f km", vs.navDest, vs.navEtaMin, vs.navRemKm);
-      lv_label_set_text(navEtaDetailLbl, buf);
-    }
-    if (navCallStatusLbl) {
-      const char *st = vs.callActive ? (vs.callAnswered ? "CALL IN PROGRESS" : "INCOMING CALL...") : "HANDS-FREE CALL CONTROL";
-      lv_label_set_text(navCallStatusLbl, st);
-      lv_obj_set_style_text_color(navCallStatusLbl, lv_color_hex(vs.callActive ? pal().green : pal().cyan), 0);
-    }
-    if (navCallerLbl) lv_label_set_text(navCallerLbl, vs.callActive ? vs.callerName : "Ready for Phone Calls");
-    if (navPhoneBattLbl) {
-      if (vs.phoneBattery >= 0) lv_label_set_text_fmt(navPhoneBattLbl, "Phone: %d%%", vs.phoneBattery);
-      else lv_label_set_text(navPhoneBattLbl, "Phone: --");
-    }
-    if (navNotifLbl) lv_label_set_text(navNotifLbl, vs.notifText);
+    if (vs.notifDirty) rebuildNotifList();
   } else if (currentPage == PAGE_MEDIA) {
-    if (medTitleLbl)  lv_label_set_text(medTitleLbl, vs.mediaTitle);
-    if (medArtistLbl) lv_label_set_text(medArtistLbl, vs.mediaArtist);
+    setLabelIfChanged(medTitleLbl, vs.mediaTitle);
+    setLabelIfChanged(medArtistLbl, vs.mediaArtist);
     if (medProgSlider && !lv_slider_is_dragged(medProgSlider)) {
       lv_slider_set_value(medProgSlider, vs.mediaProgress, LV_ANIM_OFF);
     }
     if (medVolLbl) {
-      lv_label_set_text_fmt(medVolLbl, "%s  %d%%",
-                            vs.mediaMuted ? LV_SYMBOL_MUTE : LV_SYMBOL_VOLUME_MAX,
-                            vs.mediaMuted ? 0 : vs.mediaVolume);
+      char vBuf[24];
+      snprintf(vBuf, sizeof(vBuf), "%s  %d%%",
+               vs.mediaMuted ? LV_SYMBOL_MUTE : LV_SYMBOL_VOLUME_MAX,
+               vs.mediaMuted ? 0 : vs.mediaVolume);
+      setLabelIfChanged(medVolLbl, vBuf);
     }
     if (medTimeLbl) {
-      int sec = (vs.mediaProgress * 230) / 100;
-      lv_label_set_text_fmt(medTimeLbl, "%02d:%02d / 03:50", sec / 60, sec % 60);
+      char tBuf[44];
+      if (vs.liveMediaSynced) snprintf(tBuf, sizeof(tBuf), "%d%%  |  Live Phone Sync", vs.mediaProgress);
+      else                    snprintf(tBuf, sizeof(tBuf), "0%%  |  Waiting for phone playback");
+      setLabelIfChanged(medTimeLbl, tBuf);
     }
   } else if (currentPage == PAGE_VEHICLE) {
     if (vehHvStatsLbl) {
       char buf[96];
       snprintf(buf, sizeof(buf), "Pack: %.1f V   |   Temp: %.0f C   |   SOH: 99%%\nOdometer: %.1f km   |   Trip A: %.1f km",
                vs.hvVoltage, vs.hvTempC, vs.odoKm, vs.tripKm);
-      lv_label_set_text(vehHvStatsLbl, buf);
+      setLabelIfChanged(vehHvStatsLbl, buf);
     }
   } else if (currentPage == PAGE_CONNECT) {
     if (conWifiStatusLbl) {
-      lv_label_set_text(conWifiStatusLbl, wifiOk ? LV_SYMBOL_WIFI "  WI-FI CONNECTED" : LV_SYMBOL_WIFI "  WI-FI DISCONNECTED");
+      setLabelIfChanged(conWifiStatusLbl, wifiOk ? LV_SYMBOL_WIFI "  WI-FI CONNECTED" : LV_SYMBOL_WIFI "  WI-FI DISCONNECTED");
       lv_obj_set_style_text_color(conWifiStatusLbl, lv_color_hex(wifiOk ? pal().green : pal().amber), 0);
     }
     if (conWifiDetailLbl) {
       if (wifiOk) {
-        String det = WiFi.SSID() + "  |  " + WiFi.localIP().toString() + "  |  " + String(WiFi.RSSI()) + " dBm";
-        lv_label_set_text(conWifiDetailLbl, det.c_str());
+        char det[96];
+        snprintf(det, sizeof(det), "%s  |  %s  |  %d dBm",
+                 WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        setLabelIfChanged(conWifiDetailLbl, det);
       } else {
-        lv_label_set_text(conWifiDetailLbl, "Tap CONNECT ANSHIK or SCAN 2.4G");
+        setLabelIfChanged(conWifiDetailLbl, "Tap CONNECT ANSHIK or SCAN 2.4G");
       }
     }
     if (conBleStatusLbl) {
-      lv_label_set_text(conBleStatusLbl, bleConnected ? LV_SYMBOL_BLUETOOTH "  PHONE CONNECTED" : LV_SYMBOL_BLUETOOTH "  ADVERTISING: Visteon-Lunet");
+      setLabelIfChanged(conBleStatusLbl, bleConnected ? LV_SYMBOL_BLUETOOTH "  PHONE CONNECTED" : LV_SYMBOL_BLUETOOTH "  ADVERTISING: Visteon-Lunet");
       lv_obj_set_style_text_color(conBleStatusLbl, lv_color_hex(bleConnected ? pal().green : pal().cyan), 0);
     }
     if (conBlePhoneLbl) {
-      if (vs.phoneBattery >= 0) lv_label_set_text_fmt(conBlePhoneLbl, "MTU 247  |  Phone Batt: %d%%", vs.phoneBattery);
-      else lv_label_set_text(conBlePhoneLbl, "MTU 247  |  Phone Batt: Waiting for App");
+      char bBuf[48];
+      if (vs.phoneBattery >= 0) snprintf(bBuf, sizeof(bBuf), "MTU 247  |  Phone Batt: %d%%", vs.phoneBattery);
+      else                      snprintf(bBuf, sizeof(bBuf), "MTU 247  |  Phone Batt: Waiting for App");
+      setLabelIfChanged(conBlePhoneLbl, bBuf);
     }
-    if (conBleLogLbl) {
-      String logAll;
-      for (int i = 0; i < bleLogCount; ++i) { logAll += bleLogLines[i]; logAll += "\n"; }
-      lv_label_set_text(conBleLogLbl, logAll.c_str());
+    if (conBleLogLbl && bleLogDirty) {
+      char logBuf[720];
+      size_t pos = 0;
+      logBuf[0] = '\0';
+      for (int i = 0; i < bleLogCount && pos < sizeof(logBuf) - 2; ++i) {
+        pos += snprintf(logBuf + pos, sizeof(logBuf) - pos, "%s\n", bleLogLines[i]);
+      }
+      setLabelIfChanged(conBleLogLbl, logBuf);
+      bleLogDirty = false;
     }
   } else if (currentPage == PAGE_SYSTEM) {
     if (sysMemLbl) {
@@ -2728,10 +3286,12 @@ static void updateSlowUi(uint32_t now) {
                (unsigned long)(ESP.getFreePsram() / 1024),
                (unsigned long)(now / 1000),
                touchReady ? "ACTIVE" : "OFFLINE");
-      lv_label_set_text(sysMemLbl, buf);
+      setLabelIfChanged(sysMemLbl, buf);
     }
     if (sysTouchLbl && sysTouchDot) {
-      lv_label_set_text_fmt(sysTouchLbl, "Last Touch: X=%d, Y=%d", vs.lastTouchX, vs.lastTouchY);
+      char tBuf[40];
+      snprintf(tBuf, sizeof(tBuf), "Last Touch: X=%d, Y=%d", vs.lastTouchX, vs.lastTouchY);
+      setLabelIfChanged(sysTouchLbl, tBuf);
       int dx = clampInt(10 + (vs.lastTouchX * 264) / 800, 10, 274);
       int dy = clampInt(28 + (vs.lastTouchY * 78) / 480, 28, 106);
       lv_obj_set_pos(sysTouchDot, dx, dy);

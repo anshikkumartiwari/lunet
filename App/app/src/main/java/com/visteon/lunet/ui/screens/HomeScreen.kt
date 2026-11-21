@@ -30,6 +30,8 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.TurnLeft
 import androidx.compose.material.icons.filled.TurnRight
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -111,13 +113,22 @@ fun HomeScreen(viewModel: LunetViewModel) {
                 ActiveCallCard(
                     callerName = callState.callerName.ifBlank { "Incoming Call" },
                     isRinging = callState.isRinging,
+                    isSpeakerOn = callState.isSpeakerOn,
                     onAccept = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.sendRawCommand("CMD:CALL:ACCEPT")
+                        viewModel.acceptCall()
+                    },
+                    onAcceptSpeaker = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.acceptCallWithSpeaker()
+                    },
+                    onToggleSpeaker = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.toggleSpeaker()
                     },
                     onDecline = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.sendRawCommand("CMD:CALL:DECLINE")
+                        viewModel.declineCall()
                     }
                 )
             }
@@ -594,7 +605,10 @@ private fun RecentNotificationsCard(notifications: List<NotifMirrorItem>) {
 private fun ActiveCallCard(
     callerName: String,
     isRinging: Boolean,
+    isSpeakerOn: Boolean,
     onAccept: () -> Unit,
+    onAcceptSpeaker: () -> Unit,
+    onToggleSpeaker: () -> Unit,
     onDecline: () -> Unit
 ) {
     val colors = LunetTheme.colors
@@ -628,7 +642,13 @@ private fun ActiveCallCard(
                         fontFamily = FontFamily.Monospace
                     )
                 }
-                Text("HUD ONLY", color = colors.textMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                Text(
+                    text = if (isSpeakerOn) "LOUDSPEAKER ON" else "EARPIECE",
+                    color = if (isSpeakerOn) VisteonOrange else colors.textMuted,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
             }
 
             Spacer(modifier = Modifier.height(6.dp))
@@ -642,7 +662,7 @@ private fun ActiveCallCard(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (isRinging) {
                     Button(
                         onClick = onAccept,
@@ -650,20 +670,54 @@ private fun ActiveCallCard(
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier.weight(1f).height(40.dp)
                     ) {
-                        Icon(Icons.Default.Call, contentDescription = null, tint = colors.bg, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("ANSWER", color = colors.bg, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                        Icon(Icons.Default.Call, contentDescription = null, tint = colors.bg, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("ANSWER", color = colors.bg, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+                    }
+
+                    Button(
+                        onClick = onAcceptSpeaker,
+                        colors = ButtonDefaults.buttonColors(containerColor = colors.cyan),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.weight(1.2f).height(40.dp)
+                    ) {
+                        Icon(Icons.Default.VolumeUp, contentDescription = null, tint = colors.bg, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("HANDS-FREE", color = colors.bg, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+                    }
+                } else {
+                    Button(
+                        onClick = onToggleSpeaker,
+                        colors = ButtonDefaults.buttonColors(containerColor = if (isSpeakerOn) VisteonOrange else colors.surface),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.weight(1f).height(40.dp).border(1.dp, colors.border, RoundedCornerShape(10.dp))
+                    ) {
+                        Icon(
+                            if (isSpeakerOn) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                            contentDescription = null,
+                            tint = if (isSpeakerOn) colors.bg else colors.text,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            if (isSpeakerOn) "SPEAKER ON" else "SPEAKER OFF",
+                            color = if (isSpeakerOn) colors.bg else colors.text,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp
+                        )
                     }
                 }
+
                 Button(
                     onClick = onDecline,
                     colors = ButtonDefaults.buttonColors(containerColor = colors.red),
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.weight(1f).height(40.dp)
                 ) {
-                    Icon(Icons.Default.CallEnd, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("DECLINE", color = Color.White, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Icon(Icons.Default.CallEnd, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(if (isRinging) "DECLINE" else "END", color = Color.White, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
                 }
             }
         }

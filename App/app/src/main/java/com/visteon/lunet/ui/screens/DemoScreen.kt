@@ -388,6 +388,35 @@ fun DemoScreen(viewModel: LunetViewModel) {
                             Text("NAV U-TURN", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = colors.text)
                         }
                     }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.simulateSpeaker(true)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.panelAlt),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f).height(42.dp)
+                        ) {
+                            Text("TEST SPEAKER ON", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = colors.cyan)
+                        }
+
+                        Button(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.simulateSpeaker(false)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.panelAlt),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f).height(42.dp)
+                        ) {
+                            Text("TEST SPEAKER OFF", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = colors.textMuted)
+                        }
+                    }
                 }
             }
         }
