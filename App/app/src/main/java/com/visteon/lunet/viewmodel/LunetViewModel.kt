@@ -77,6 +77,11 @@ class LunetViewModel(application: Application) : AndroidViewModel(application) {
         app.bleManager.disconnect()
     }
 
+    fun forceResetBle() {
+        app.startBleForegroundService()
+        app.bleManager.forceResetAndScan()
+    }
+
     fun sendRawCommand(raw: String) {
         app.bleManager.enqueuePacket(raw)
     }

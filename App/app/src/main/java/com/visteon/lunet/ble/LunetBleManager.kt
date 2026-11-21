@@ -59,6 +59,7 @@ class LunetBleManager(private val context: Context) {
 
     private var activeGatt: BluetoothGatt? = null
     private var lunetCharacteristic: BluetoothGattCharacteristic? = null
+    private var lastKnownMacAddress: String? = null
 
     // StateFlows for UI
     private val _connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
@@ -79,6 +80,8 @@ class LunetBleManager(private val context: Context) {
     private var isScanning = false
 
     init {
+        lastKnownMacAddress = context.getSharedPreferences("lunet_ble", Context.MODE_PRIVATE)
+            .getString("last_mac", null)
         startWriteWorker()
     }
 
@@ -174,22 +177,20 @@ class LunetBleManager(private val context: Context) {
         _connectionState.value = BleConnectionState.SCANNING
         isScanning = true
 
-        val filters = listOf(
-            ScanFilter.Builder().setDeviceName(BleConstants.DEVICE_NAME).build(),
-            ScanFilter.Builder().setServiceUuid(ParcelUuid(BleConstants.SERVICE_UUID)).build()
-        )
-
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setReportDelay(0)
             .build()
 
         try {
-            scanner.startScan(filters, settings, scanCallback)
-            Log.i(tag, "BLE Scan initiated for '${BleConstants.DEVICE_NAME}'")
+            // Null filter list delivers all packets to onScanResult where software matching
+            // handles device name, 128-bit service UUID, and cached MAC without OS hardware filter drops.
+            scanner.startScan(null, settings, scanCallback)
+            Log.i(tag, "BLE Scan initiated (unfiltered matching in onScanResult)")
 
-            // Auto stop scan after 15 seconds if not found
+            // Auto stop scan after 18 seconds if not found
             scope.launch {
-                delay(15000)
+                delay(18000)
                 if (isScanning && _connectionState.value == BleConnectionState.SCANNING) {
                     stopScan()
                     _connectionState.value = BleConnectionState.DISCONNECTED
@@ -218,13 +219,37 @@ class LunetBleManager(private val context: Context) {
     fun connectToDevice(device: BluetoothDevice) {
         stopScan()
         _connectionState.value = BleConnectionState.CONNECTING
-        Log.i(tag, "Connecting to ${device.name ?: device.address}...")
+        Log.i(tag, "Connecting to ${device.name ?: device.address} (${device.address})...")
 
-        activeGatt?.close()
-        activeGatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        } else {
-            device.connectGatt(context, false, gattCallback)
+        lastKnownMacAddress = device.address
+        context.getSharedPreferences("lunet_ble", Context.MODE_PRIVATE)
+            .edit()
+            .putString("last_mac", device.address)
+            .apply()
+
+        // Cleanly disconnect and close any previous active GATT
+        activeGatt?.let { gatt ->
+            try {
+                gatt.disconnect()
+                gatt.close()
+            } catch (e: Exception) {
+                Log.w(tag, "Error closing prior GATT: ${e.message}")
+            }
+        }
+        activeGatt = null
+
+        scope.launch(Dispatchers.Main) {
+            delay(100) // Brief socket stabilization
+            try {
+                activeGatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+                } else {
+                    device.connectGatt(context, false, gattCallback)
+                }
+            } catch (e: Exception) {
+                Log.e(tag, "connectGatt failed: ${e.message}")
+                _connectionState.value = BleConnectionState.DISCONNECTED
+            }
         }
     }
 
@@ -245,15 +270,41 @@ class LunetBleManager(private val context: Context) {
         _negotiatedMtu.value = 23
     }
 
+    fun forceResetAndScan() {
+        Log.i(tag, "Performing full BLE stack reset & force re-scan...")
+        scope.launch {
+            try {
+                enqueuePacket("CMD:BLE:RESET")
+                delay(80)
+            } catch (e: Exception) {
+                // ignore
+            }
+            disconnect()
+            stopScan()
+            delay(300)
+            startScan()
+        }
+    }
+
+    private fun refreshGattCache(gatt: BluetoothGatt): Boolean {
+        return try {
+            val refreshMethod = gatt.javaClass.getMethod("refresh")
+            (refreshMethod.invoke(gatt) as? Boolean) ?: false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     private val scanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             result?.device?.let { device ->
                 val name = device.name ?: result.scanRecord?.deviceName
-                if (name == BleConstants.DEVICE_NAME ||
-                    result.scanRecord?.serviceUuids?.any { it.uuid == BleConstants.SERVICE_UUID } == true
-                ) {
-                    Log.i(tag, "Discovered target cluster: $name (${device.address})")
+                val hasService = result.scanRecord?.serviceUuids?.any { it.uuid == BleConstants.SERVICE_UUID } == true
+                val matchesMac = lastKnownMacAddress != null && device.address.equals(lastKnownMacAddress, ignoreCase = true)
+
+                if (name == BleConstants.DEVICE_NAME || hasService || matchesMac) {
+                    Log.i(tag, "Discovered target cluster: '$name' (${device.address})")
                     connectToDevice(device)
                 }
             }
@@ -270,14 +321,39 @@ class LunetBleManager(private val context: Context) {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             Log.d(tag, "onConnectionStateChange: status=$status, newState=$newState")
+            if (status != BluetoothGatt.GATT_SUCCESS && newState != BluetoothProfile.STATE_CONNECTED) {
+                Log.w(tag, "GATT connection failure with status $status, cleaning up handle")
+                try {
+                    gatt.close()
+                } catch (e: Exception) {
+                    // ignore
+                }
+                if (activeGatt == gatt) {
+                    activeGatt = null
+                    lunetCharacteristic = null
+                }
+                stopRssiPolling()
+                _connectionState.value = BleConnectionState.DISCONNECTED
+                _negotiatedMtu.value = 23
+                return
+            }
+
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.i(tag, "Connected to GATT server. Requesting MTU ${BleConstants.TARGET_MTU}...")
+                Log.i(tag, "Connected to GATT server. Refreshing cache & requesting MTU ${BleConstants.TARGET_MTU}...")
+                refreshGattCache(gatt)
                 gatt.requestMtu(BleConstants.TARGET_MTU)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.w(tag, "Disconnected from cluster GATT server.")
                 stopRssiPolling()
-                activeGatt = null
-                lunetCharacteristic = null
+                try {
+                    gatt.close()
+                } catch (e: Exception) {
+                    Log.w(tag, "Error closing gatt on disconnect: ${e.message}")
+                }
+                if (activeGatt == gatt) {
+                    activeGatt = null
+                    lunetCharacteristic = null
+                }
                 _connectionState.value = BleConnectionState.DISCONNECTED
                 _negotiatedMtu.value = 23
             }
@@ -363,6 +439,9 @@ class LunetBleManager(private val context: Context) {
         override fun onReadRemoteRssi(gatt: BluetoothGatt, rssi: Int, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 _rssi.value = rssi
+            } else {
+                Log.w(tag, "RSSI read failed with status $status; disconnecting stale link")
+                disconnect()
             }
         }
     }

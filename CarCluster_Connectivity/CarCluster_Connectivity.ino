@@ -2585,6 +2585,7 @@ class LunetServerCallbacks : public BLEServerCallbacks {
     bleSyncReqPending = true;
     bleConnectedAt = millis();
     Serial.println("[BLE] Companion app connected");
+    appendBleLog("SYS", "Phone connected");
   }
   void onDisconnect(BLEServer *server) override {
     bleConnected = false;
@@ -2592,6 +2593,8 @@ class LunetServerCallbacks : public BLEServerCallbacks {
     bleRestartPending = true;
     bleDisconnectAt = millis();
     Serial.println("[BLE] Companion app disconnected");
+    appendBleLog("SYS", "Phone disconnected");
+    BLEDevice::startAdvertising();
   }
 };
 
@@ -2619,10 +2622,10 @@ static void startBle() {
   BLEDevice::init(BLE_DEVICE_NAME);
   BLEDevice::setMTU(247);
 
-  BLEServer *server = BLEDevice::createServer();
-  server->setCallbacks(new LunetServerCallbacks());
+  bleServer = BLEDevice::createServer();
+  bleServer->setCallbacks(new LunetServerCallbacks());
 
-  BLEService *service = server->createService(BLE_SERVICE_UUID);
+  BLEService *service = bleServer->createService(BLE_SERVICE_UUID);
   bleCharacteristic = service->createCharacteristic(
       BLE_CHAR_UUID,
       BLECharacteristic::PROPERTY_READ     |
@@ -2644,12 +2647,29 @@ static void startBle() {
 }
 
 static void restartBleAdvertising() {
-  if (!bleReady) startBle();
-  else if (!bleConnected) {
-    BLEDevice::startAdvertising();
-    bleRestartPending = false;
-    appendBleLog("SYS", "Advertising restarted");
+  if (!bleReady) {
+    startBle();
+    return;
   }
+  // Force reset stale connection state and kickstart advertising
+  bleConnected = false;
+  bleSyncReqPending = false;
+  bleRestartPending = false;
+  if (bleServer) {
+    for (uint16_t i = 0; i < 4; i++) {
+      bleServer->disconnect(i);
+    }
+  }
+  BLEAdvertising *adv = BLEDevice::getAdvertising();
+  if (adv) {
+    adv->stop();
+    delay(40);
+    adv->start();
+  } else {
+    BLEDevice::startAdvertising();
+  }
+  appendBleLog("SYS", "Adv force-restarted");
+  triggerAlert("BLE ADV RESTARTED", pal().cyan, 2200);
 }
 
 static int splitPipes(const String &src, String *outParts, int maxParts) {
@@ -2871,6 +2891,8 @@ static void processBleCommand(const char *command) {
     }
     if (drvNavArrowBox) lv_obj_invalidate(drvNavArrowBox);
     if (currentPage == PAGE_NAV) refreshNavHudCard();
+  } else if (cmd.equalsIgnoreCase("CMD:BLE:RESET") || cmd.equalsIgnoreCase("CMD:BLE:RECONNECT")) {
+    restartBleAdvertising();
   }
 }
 
