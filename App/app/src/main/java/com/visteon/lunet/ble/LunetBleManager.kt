@@ -103,6 +103,12 @@ class LunetBleManager(private val context: Context) {
         }
     }
 
+    companion object {
+        fun sanitizeField(value: String): String {
+            return value.replace("|", "/").replace("\n", " ").replace("\r", " ").trim()
+        }
+    }
+
     fun enqueuePacket(rawPayload: String) {
         if (rawPayload.isBlank()) return
         writeChannel.trySend(rawPayload)
@@ -147,12 +153,12 @@ class LunetBleManager(private val context: Context) {
                 return
             }
 
-            // Await callback or timeout fallback (1200ms)
-            withTimeoutOrNull(1200) {
+            // Await callback with 500ms safety timeout
+            withTimeoutOrNull(500) {
                 ack.await()
             }
             // Small inter-packet cooldown to prevent ESP32 BLE buffer congestion
-            delay(25)
+            delay(20)
         } catch (e: Exception) {
             Log.e(tag, "Exception during write: ${e.message}")
         } finally {

@@ -49,6 +49,7 @@ class LunetApp : Application() {
     val syncNavEnabled = MutableStateFlow(true)
     val syncCallsEnabled = MutableStateFlow(true)
     val syncTimeBattWeather = MutableStateFlow(true)
+    val autoReconnectEnabled = MutableStateFlow(true)
 
     // Cluster telemetry state
     private val _telemetry = MutableStateFlow(ClusterTelemetry())

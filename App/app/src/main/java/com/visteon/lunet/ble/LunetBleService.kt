@@ -72,13 +72,16 @@ class LunetBleService : Service() {
     }
 
     private fun scheduleAutoReconnect() {
+        if (com.visteon.lunet.LunetApp.instance?.autoReconnectEnabled?.value == false) return
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
             var attempt = 1
             while (isActive && bleManager.connectionState.value == BleConnectionState.DISCONNECTED) {
+                if (com.visteon.lunet.LunetApp.instance?.autoReconnectEnabled?.value == false) break
                 val backoffSec = (1 shl (attempt - 1)).coerceAtMost(16)
                 delay(backoffSec * 1000L)
                 if (bleManager.connectionState.value == BleConnectionState.DISCONNECTED) {
+                    startForegroundServiceNotification("Scanning for Visteon-Lunet...")
                     bleManager.startScan()
                 }
                 attempt++
@@ -149,7 +152,10 @@ class LunetBleService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_CONNECT -> bleManager.startScan()
+            ACTION_CONNECT -> {
+                startForegroundServiceNotification("Scanning for Visteon-Lunet...")
+                bleManager.startScan()
+            }
             ACTION_DISCONNECT -> {
                 cancelReconnect()
                 bleManager.disconnect()
