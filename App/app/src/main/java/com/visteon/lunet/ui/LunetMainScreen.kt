@@ -20,7 +20,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -31,18 +34,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.visteon.lunet.ui.components.DynamicStatusPill
+import androidx.compose.ui.unit.sp
+import com.visteon.lunet.ble.BleConnectionState
 import com.visteon.lunet.ui.components.FloatingNavBar
 import com.visteon.lunet.ui.components.PingAlarmOverlay
-import com.visteon.lunet.ui.components.VisteonHeaderTitle
-import com.visteon.lunet.ui.screens.BridgeScreen
-import com.visteon.lunet.ui.screens.CockpitScreen
-import com.visteon.lunet.ui.screens.ConsoleScreen
-import com.visteon.lunet.ui.screens.DemoRemoteScreen
+import com.visteon.lunet.ui.components.VisteonLogo
+import com.visteon.lunet.ui.screens.DemoScreen
+import com.visteon.lunet.ui.screens.HomeScreen
+import com.visteon.lunet.ui.screens.SyncScreen
 import com.visteon.lunet.ui.theme.LunetTheme
 import com.visteon.lunet.ui.theme.VisteonOrange
 import com.visteon.lunet.viewmodel.LunetViewModel
@@ -51,11 +55,10 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * Main Automotive Scaffold:
- * - Visteon Header + Cluster-identical Sun/Moon vector theme toggle
- * - Dynamic Status Pill
- * - 4 Animated Screens
- * - Floating Frosted Bottom Navigation Pill
+ * Ultra-Clean OEM Automotive Scaffold:
+ * - Top bar: Vector Visteon logo + "Lunet" wordmark (left), compact live status pill (center), Sun/Moon toggle (right)
+ * - 3 Minimalist Tabs: Home (Live Mirror), Sync (Bridges & Permissions), Demo (Presentation Remote)
+ * - Sleek Floating Capsule Dock
  * - Emergency Anti-Loss Ping Alarm Overlay
  */
 @Composable
@@ -66,7 +69,6 @@ fun LunetMainScreen(viewModel: LunetViewModel) {
     val currentTab by viewModel.currentTab.collectAsState()
     val isDarkMode by viewModel.isDarkMode.collectAsState()
     val connectionState by viewModel.connectionState.collectAsState()
-    val telemetry by viewModel.telemetry.collectAsState()
     val isAlarmActive by viewModel.isAlarmActive.collectAsState()
 
     Box(
@@ -79,20 +81,66 @@ fun LunetMainScreen(viewModel: LunetViewModel) {
                 .fillMaxSize()
                 .statusBarsPadding()
         ) {
-            // Top Header: Visteon Lunet Branding + Sun/Moon Theme Toggle
+            // Ultra-Clean Top Bar: Logo+Wordmark (Left), Status Pill (Center), Sun/Moon (Right)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                VisteonHeaderTitle()
+                // Left: Visteon Logo + Lunet wordmark
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    VisteonLogo(size = 22.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Lunet",
+                        color = colors.text,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.SansSerif,
+                        letterSpacing = 0.5.sp
+                    )
+                }
 
-                // Cluster-matching Vector Sun / Moon Icon Toggle
+                // Center: Compact live status pill
+                val (dotColor, statusLabel) = when (connectionState) {
+                    BleConnectionState.CONNECTED -> Pair(colors.green, "Connected")
+                    BleConnectionState.SCANNING, BleConnectionState.CONNECTING -> Pair(colors.cyan, "Scanning")
+                    BleConnectionState.DISCONNECTED -> Pair(colors.textMuted, "Offline")
+                }
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surface)
+                        .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(dotColor)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = statusLabel,
+                            color = dotColor,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+                }
+
+                // Right: Icon-only Sun / Moon Theme Toggle
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
                         .clip(CircleShape)
                         .background(colors.surface)
                         .border(1.dp, colors.border, CircleShape)
@@ -105,20 +153,16 @@ fun LunetMainScreen(viewModel: LunetViewModel) {
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    ThemeIconVector(isDark = isDarkMode, color = if (isDarkMode) colors.amber else colors.cyan)
+                    ThemeIconVector(
+                        isDark = isDarkMode,
+                        color = if (isDarkMode) colors.amber else colors.cyan
+                    )
                 }
             }
 
-            // Dynamic Status Pill
-            DynamicStatusPill(
-                connectionState = connectionState,
-                telemetry = telemetry,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-            )
+            Spacer(modifier = Modifier.height(4.dp))
 
-            Spacer(modifier = Modifier.height(6.dp))
-
-            // Screen Body
+            // Body: Animated switching across the 3 tabs
             Box(modifier = Modifier.weight(1f)) {
                 AnimatedContent(
                     targetState = currentTab,
@@ -126,23 +170,22 @@ fun LunetMainScreen(viewModel: LunetViewModel) {
                     label = "tabTransition"
                 ) { tab ->
                     when (tab) {
-                        ScreenTab.COCKPIT -> CockpitScreen(viewModel)
-                        ScreenTab.BRIDGE -> BridgeScreen(viewModel)
-                        ScreenTab.DEMO_REMOTE -> DemoRemoteScreen(viewModel)
-                        ScreenTab.CONSOLE -> ConsoleScreen(viewModel)
+                        ScreenTab.HOME -> HomeScreen(viewModel)
+                        ScreenTab.SYNC -> SyncScreen(viewModel)
+                        ScreenTab.DEMO -> DemoScreen(viewModel)
                     }
                 }
             }
         }
 
-        // Floating Frosted Bottom Navigation Bar
+        // Floating Frosted Bottom Navigation Dock (3 tabs: Home, Sync, Demo)
         FloatingNavBar(
             selectedTab = currentTab,
             onTabSelected = { viewModel.selectTab(it) },
             modifier = Modifier.align(Alignment.BottomCenter)
         )
 
-        // Anti-Loss Emergency Overlay
+        // Emergency Full-Screen Anti-Loss Ping Alarm Overlay
         PingAlarmOverlay(
             isAlarmActive = isAlarmActive,
             onStopAlarm = { viewModel.stopAlarm() }
@@ -151,31 +194,29 @@ fun LunetMainScreen(viewModel: LunetViewModel) {
 }
 
 /**
- * Geometric vector reconstruction of the Sun (in Dark mode) and Crescent Moon
- * (in Light mode) matching CarCluster_Connectivity.ino drawThemeIconCb.
+ * Geometric vector reconstruction of Sun (in Dark mode) and Crescent Moon (in Light mode)
+ * matching CarCluster_Connectivity.ino drawThemeIconCb.
  */
 @Composable
 private fun ThemeIconVector(isDark: Boolean, color: Color) {
-    Canvas(modifier = Modifier.size(18.dp)) {
+    Canvas(modifier = Modifier.size(17.dp)) {
         val cx = size.width / 2
         val cy = size.height / 2
 
         if (isDark) {
-            // Sun: Central Circle + 8 Radiating Rays
-            drawCircle(color = color, radius = 4.dp.toPx(), center = Offset(cx, cy))
+            drawCircle(color = color, radius = 3.8.dp.toPx(), center = Offset(cx, cy))
             for (i in 0 until 8) {
                 val angle = Math.toRadians((i * 45).toDouble())
-                val r1 = 6.dp.toPx()
-                val r2 = 8.5.dp.toPx()
+                val r1 = 5.6.dp.toPx()
+                val r2 = 8.0.dp.toPx()
                 drawLine(
                     color = color,
                     start = Offset((cx + r1 * cos(angle)).toFloat(), (cy + r1 * sin(angle)).toFloat()),
                     end = Offset((cx + r2 * cos(angle)).toFloat(), (cy + r2 * sin(angle)).toFloat()),
-                    strokeWidth = 1.5.dp.toPx()
+                    strokeWidth = 1.4.dp.toPx()
                 )
             }
         } else {
-            // Crescent Moon: Outer arc - Inner subtracted arc
             val path = Path().apply {
                 moveTo(cx - 3.dp.toPx(), cy - 6.dp.toPx())
                 cubicTo(

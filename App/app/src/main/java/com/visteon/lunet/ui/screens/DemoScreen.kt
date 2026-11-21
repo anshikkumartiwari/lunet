@@ -39,12 +39,12 @@ import com.visteon.lunet.ui.theme.VisteonOrange
 import com.visteon.lunet.viewmodel.LunetViewModel
 
 /**
- * Demo Remote Deck for Visteon presentations:
- * Tactile real-time sliders and buttons to directly command the ESP32 cluster's
- * Speedometer, Red Overspeed Flash, Gear, Drive Mode, and simulated alerts.
+ * Demo Remote Screen:
+ * Presentation Deck for Visteon executives to live-drive the physical ESP32-S3 cluster.
+ * Controls Speed, Speed Limit (red overspeed flash), Gear, Drive Mode, EV SoC, and demo triggers.
  */
 @Composable
-fun DemoRemoteScreen(viewModel: LunetViewModel) {
+fun DemoScreen(viewModel: LunetViewModel) {
     val colors = LunetTheme.colors
     val telemetry by viewModel.telemetry.collectAsState()
     val haptic = LocalHapticFeedback.current
@@ -55,21 +55,9 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        item {
-            Text(
-                text = "VISTEON LIVE DEMO REMOTE",
-                color = VisteonOrange,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-                letterSpacing = 1.sp,
-                modifier = Modifier.padding(top = 10.dp)
-            )
-        }
-
-        // Section 1: Speed & Speed Limit (Overspeed Flash Trigger)
+        // Section 1: Speed & Speed Limit (Overspeed Flash)
         item {
             Box(
                 modifier = Modifier
@@ -90,11 +78,12 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "SPEEDOMETER (SPEED:<val>)",
+                            text = "SPEED (SPEED:<km/h>)",
                             color = colors.textMuted,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 0.8.sp
                         )
                         Text(
                             text = "${telemetry.speedKmh.toInt()} KM/H",
@@ -115,18 +104,19 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
                         colors = SliderDefaults.colors(
                             thumbColor = if (isOverspeed) colors.red else VisteonOrange,
                             activeTrackColor = if (isOverspeed) colors.red else VisteonOrange,
-                            inactiveTrackColor = colors.surfaceDeep
+                            inactiveTrackColor = colors.panelAlt
                         )
                     )
 
                     Spacer(modifier = Modifier.height(10.dp))
 
                     Text(
-                        text = "SPEED LIMIT (LIMIT:<val>)",
+                        text = "SPEED LIMIT • RED FLASH (LIMIT:<val>)",
                         color = colors.textMuted,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 0.8.sp
                     )
 
                     Spacer(modifier = Modifier.height(8.dp))
@@ -135,14 +125,14 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        listOf(40, 60, 80, 100, 120).forEach { limit ->
+                        listOf(40, 60, 80, 100).forEach { limit ->
                             val isSelected = telemetry.speedLimitKmh == limit
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(38.dp)
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(if (isSelected) colors.red else colors.surfaceDeep)
+                                    .background(if (isSelected) colors.red else colors.panelAlt)
                                     .border(1.dp, if (isSelected) colors.red else colors.border, RoundedCornerShape(8.dp))
                                     .clickable {
                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -164,7 +154,7 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
                     if (isOverspeed) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "⚠ OVERSPEED ACTIVE: Cluster flashing red warning border",
+                            text = "⚠ OVERSPEED ACTIVE: Cluster flashing red warning perimeter",
                             color = colors.red,
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace,
@@ -175,7 +165,7 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
             }
         }
 
-        // Section 2: Gear & Drive Mode Selectors
+        // Section 2: Gear, Drive Mode & EV Battery
         item {
             Box(
                 modifier = Modifier
@@ -186,14 +176,15 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
                     .padding(16.dp)
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    // Gear Selector (P, R, N, D)
+                    // Gear Pills (P R N D)
                     Column {
                         Text(
                             text = "TRANSMISSION GEAR (GEAR:<P|R|N|D>)",
                             color = colors.textMuted,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 0.8.sp
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(
@@ -206,13 +197,13 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
                                     isSelected && g == Gear.DRIVE -> colors.green
                                     isSelected && g == Gear.REVERSE -> colors.red
                                     isSelected -> VisteonOrange
-                                    else -> colors.surfaceDeep
+                                    else -> colors.panelAlt
                                 }
 
                                 Box(
                                     modifier = Modifier
                                         .weight(1f)
-                                        .height(44.dp)
+                                        .height(42.dp)
                                         .clip(RoundedCornerShape(10.dp))
                                         .background(bg)
                                         .border(1.dp, if (isSelected) bg else colors.border, RoundedCornerShape(10.dp))
@@ -225,7 +216,7 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
                                     Text(
                                         text = g.code.toString(),
                                         color = if (isSelected) colors.bg else colors.text,
-                                        fontSize = 16.sp,
+                                        fontSize = 15.sp,
                                         fontWeight = FontWeight.Bold,
                                         fontFamily = FontFamily.Monospace
                                     )
@@ -234,14 +225,15 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
                         }
                     }
 
-                    // Drive Mode Selector (ECO, COMFORT, SPORT)
+                    // Drive Mode Pills (ECO, COMFORT, SPORT)
                     Column {
                         Text(
-                            text = "DRIVE DYNAMICS MODE (MODE:<ECO|COMFORT|SPORT>)",
+                            text = "DRIVE DYNAMICS (MODE:<ECO|COMFORT|SPORT>)",
                             color = colors.textMuted,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 0.8.sp
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(
@@ -254,13 +246,13 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
                                     isSelected && m == DriveMode.SPORT -> VisteonOrange
                                     isSelected && m == DriveMode.ECO -> colors.green
                                     isSelected -> colors.cyan
-                                    else -> colors.surfaceDeep
+                                    else -> colors.panelAlt
                                 }
 
                                 Box(
                                     modifier = Modifier
                                         .weight(1f)
-                                        .height(42.dp)
+                                        .height(40.dp)
                                         .clip(RoundedCornerShape(10.dp))
                                         .background(bg)
                                         .border(1.dp, if (isSelected) bg else colors.border, RoundedCornerShape(10.dp))
@@ -282,18 +274,19 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
                         }
                     }
 
-                    // EV Battery SoC Slider
+                    // EV Battery State of Charge
                     Column {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "EV BATTERY STATE OF CHARGE (SOC:<val>)",
+                                text = "EV BATTERY SOC (SOC:<val>)",
                                 color = colors.textMuted,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace
+                                fontFamily = FontFamily.Monospace,
+                                letterSpacing = 0.8.sp
                             )
                             Text(
                                 text = "${telemetry.evSocPercent.toInt()}%",
@@ -310,7 +303,7 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
                             colors = SliderDefaults.colors(
                                 thumbColor = colors.green,
                                 activeTrackColor = colors.green,
-                                inactiveTrackColor = colors.surfaceDeep
+                                inactiveTrackColor = colors.panelAlt
                             )
                         )
                     }
@@ -318,23 +311,24 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
             }
         }
 
-        // Section 3: One-Tap Live Scenario Triggers
+        // Section 3: One-Tap Presentation Scenario Triggers
         item {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(colors.panelAlt)
+                    .background(colors.surface)
                     .border(1.dp, colors.border, RoundedCornerShape(16.dp))
                     .padding(16.dp)
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
                         text = "ONE-TAP PRESENTATION SCENARIOS",
-                        color = colors.textMuted,
+                        color = VisteonOrange,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 0.8.sp
                     )
 
                     Row(
@@ -346,23 +340,23 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.simulateIncomingCall("Aditya Sharma")
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = colors.surfaceDeep),
-                            modifier = Modifier.weight(1f).height(42.dp),
-                            shape = RoundedCornerShape(8.dp)
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.panelAlt),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f).height(42.dp)
                         ) {
-                            Text("SIMULATE CALL", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("SAMPLE CALL", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = colors.text)
                         }
 
                         Button(
                             onClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.simulateEndCall()
+                                viewModel.pushSampleNavTurn(NavDirection.RIGHT, 150, "Visteon Innovation Way", 8, 4.2f)
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = colors.surfaceDeep),
-                            modifier = Modifier.weight(1f).height(42.dp),
-                            shape = RoundedCornerShape(8.dp)
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.panelAlt),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f).height(42.dp)
                         ) {
-                            Text("END CALL", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("NAV RIGHT TURN", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = colors.text)
                         }
                     }
 
@@ -373,45 +367,33 @@ fun DemoRemoteScreen(viewModel: LunetViewModel) {
                         Button(
                             onClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.sendSampleNotification("WhatsApp", "Aditya: Cluster UI demo confirmed for 5 PM!")
+                                viewModel.sendSampleNotification("WhatsApp", "Aditya: Cluster UI demo approved for 5 PM!")
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = colors.surfaceDeep),
-                            modifier = Modifier.weight(1f).height(42.dp),
-                            shape = RoundedCornerShape(8.dp)
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.panelAlt),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f).height(42.dp)
                         ) {
-                            Text("WHATSAPP NOTIF", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("SAMPLE NOTIF", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = colors.text)
                         }
 
                         Button(
                             onClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.pushSampleNavTurn(NavDirection.RIGHT, 150, "Visteon Innovation Way", 8, 4.2f)
+                                viewModel.pushSampleNavTurn(NavDirection.UTURN, 320, "Highway 44 Junction", 14, 9.8f)
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = colors.surfaceDeep),
-                            modifier = Modifier.weight(1f).height(42.dp),
-                            shape = RoundedCornerShape(8.dp)
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.panelAlt),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f).height(42.dp)
                         ) {
-                            Text("NAV TURN RIGHT", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("NAV U-TURN", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = colors.text)
                         }
-                    }
-
-                    Button(
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.pushSampleNavTurn(NavDirection.UTURN, 320, "Highway 44 Junction", 14, 9.8f)
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = colors.surfaceDeep),
-                        modifier = Modifier.fillMaxWidth().height(42.dp),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("NAV U-TURN DEMO", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                     }
                 }
             }
         }
 
         item {
-            Spacer(modifier = Modifier.height(90.dp))
+            Spacer(modifier = Modifier.height(88.dp))
         }
     }
 }

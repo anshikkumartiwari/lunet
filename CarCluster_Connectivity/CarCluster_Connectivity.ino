@@ -29,36 +29,36 @@ using namespace esp_panel::drivers;
 // -----------------------------------------------------------------------------
 // Safe Font Fallbacks (Compiles cleanly on any lv_conf.h)
 // -----------------------------------------------------------------------------
+#if LV_FONT_MONTSERRAT_14
+  #define FONT_SM (&lv_font_montserrat_14)
+#else
+  #define FONT_SM (LV_FONT_DEFAULT)
+#endif
+
 #if LV_FONT_MONTSERRAT_12
   #define FONT_XS (&lv_font_montserrat_12)
 #else
-  #define FONT_XS (&lv_font_montserrat_14)
+  #define FONT_XS FONT_SM
 #endif
-
-#define FONT_SM (&lv_font_montserrat_14)
 
 #if LV_FONT_MONTSERRAT_16
   #define FONT_MD (&lv_font_montserrat_16)
 #else
-  #define FONT_MD (&lv_font_montserrat_14)
+  #define FONT_MD FONT_SM
 #endif
 
 #if LV_FONT_MONTSERRAT_20
   #define FONT_LG (&lv_font_montserrat_20)
-#elif LV_FONT_MONTSERRAT_16
-  #define FONT_LG (&lv_font_montserrat_16)
 #else
-  #define FONT_LG (&lv_font_montserrat_14)
+  #define FONT_LG FONT_MD
 #endif
 
 #if LV_FONT_MONTSERRAT_28
   #define FONT_XL (&lv_font_montserrat_28)
 #elif LV_FONT_MONTSERRAT_24
   #define FONT_XL (&lv_font_montserrat_24)
-#elif LV_FONT_MONTSERRAT_20
-  #define FONT_XL (&lv_font_montserrat_20)
 #else
-  #define FONT_XL (&lv_font_montserrat_16)
+  #define FONT_XL FONT_LG
 #endif
 
 #if LV_FONT_MONTSERRAT_48
@@ -69,11 +69,20 @@ using namespace esp_panel::drivers;
   #define FONT_HERO (&lv_font_montserrat_36)
 #elif LV_FONT_MONTSERRAT_32
   #define FONT_HERO (&lv_font_montserrat_32)
-#elif LV_FONT_MONTSERRAT_28
-  #define FONT_HERO (&lv_font_montserrat_28)
 #else
   #define FONT_HERO FONT_XL
 #endif
+
+// -----------------------------------------------------------------------------
+// Safe Math Helpers (Avoids ESP32 Core 3.x min/max/constrain type mismatches)
+// -----------------------------------------------------------------------------
+static inline int clampInt(int v, int lo, int hi) {
+  return (v < lo) ? lo : ((v > hi) ? hi : v);
+}
+
+static inline float clampFloat(float v, float lo, float hi) {
+  return (v < lo) ? lo : ((v > hi) ? hi : v);
+}
 
 // -----------------------------------------------------------------------------
 // Shared BLE 5.0 Protocol Constants (Matches Kotlin Companion App)
@@ -116,8 +125,7 @@ static const ThemePalette THEME_LIGHT = {
 };
 
 static bool lightTheme = false;
-static inline const ThemePalette &T() { return lightTheme ? THEME_LIGHT : THEME_DARK; }
-
+#define pal() (lightTheme ? THEME_LIGHT : THEME_DARK)
 // -----------------------------------------------------------------------------
 // Hardware & Core Handles
 // -----------------------------------------------------------------------------
@@ -131,7 +139,7 @@ static lv_color_t *drawBuffer1 = nullptr;
 static lv_color_t *drawBuffer2 = nullptr;
 static esp_timer_handle_t lvglTickTimer = nullptr;
 
-// BLE State & Thread-Safe 12-Slot Ring Queue (Zero Dropped Burst Packets)
+// BLE State & Thread-Safe 12-Slot Ring Queue
 static bool bleReady = false;
 static volatile bool bleConnected = false;
 static volatile bool bleRestartPending = false;
@@ -184,7 +192,7 @@ struct VehicleState {
   // Powertrain & Dynamics (Safe Boot Defaults)
   float speedKmh       = 0.0f;
   float targetSpeedKmh = 0.0f;
-  float powerKw        = 0.0f;  // -60 (Regen) to +180 (Power)
+  float powerKw        = 0.0f;
   int   speedLimitKmh  = 80;
   char  gear           = 'P';   // Default: PARK
   DriveMode mode       = MODE_COMFORT;
@@ -198,7 +206,7 @@ struct VehicleState {
   float efficiencyKwh  = 14.2f;
   float hvVoltage      = 398.4f;
   float hvTempC        = 31.0f;
-  int   regenLevel     = 1;     // 0=Low, 1=Std, 2=One-Pedal
+  int   regenLevel     = 1;
 
   // ADAS & Signals
   bool  leftBlinker    = false;
@@ -211,7 +219,7 @@ struct VehicleState {
   float roadPhase      = 0.0f;
 
   // Body & TPMS (PSI)
-  float tpms[4]        = {34.2f, 34.4f, 33.8f, 34.1f}; // FL, FR, RL, RR
+  float tpms[4]        = {34.2f, 34.4f, 33.8f, 34.1f};
   bool  headlightsOn   = true;
   bool  doorsLocked    = true;
   bool  trunkOpen      = false;
@@ -223,14 +231,14 @@ struct VehicleState {
   bool  acOn           = true;
   bool  autoClimate    = true;
   bool  defrostOn      = false;
-  int   seatHeat       = 0;     // 0..3
+  int   seatHeat       = 0;
 
   // Phone Sync & Dynamic Alert
   char  timeStr[16]    = "12:00 PM";
   char  dateStr[24]    = "Sat, 21 Nov";
   char  weatherStr[28] = "27C Clear";
   int   supplyBattery  = 100;   // Direct power supply = 100%
-  int   phoneBattery   = -1;    // Synced via PBATT:<0-100> (-1 = not synced)
+  int   phoneBattery   = -1;    // Synced via PBATT:<0-100>
   char  alertText[72]  = "";
   uint32_t alertColor  = VISTEON_ORANGE;
   uint32_t alertUntil  = 0;
@@ -254,10 +262,10 @@ struct VehicleState {
   char  mediaTitle[56] = "Not Playing";
   char  mediaArtist[44]= "Connect Lunet App for Live Audio";
   bool  mediaPlaying   = false;
-  int   mediaProgress  = 0;     // 0..100
-  int   mediaVolume    = 70;    // 0..100
+  int   mediaProgress  = 0;
+  int   mediaVolume    = 70;
   bool  mediaMuted     = false;
-  int   eqPreset       = 0;     // 0=Studio, 1=Bass+, 2=Vocal, 3=Spatial
+  int   eqPreset       = 0;
   float eqBars[12]     = {8,12,10,14,12,10,8,12,10,12,8,10};
   float vinylAngle     = 0.0f;
 
@@ -277,7 +285,7 @@ static lv_obj_t *bootBar          = nullptr;
 static bool      bootActive       = false;
 static uint32_t  bootStartMs      = 0;
 
-static lv_obj_t *overspeedOverlay = nullptr; // Full-screen pulsing red edge warning
+static lv_obj_t *overspeedOverlay = nullptr;
 
 static lv_obj_t *topBar           = nullptr;
 static lv_obj_t *dynamicPill      = nullptr;
@@ -372,9 +380,11 @@ static lv_obj_t *conBlePhoneLbl   = nullptr;
 static lv_obj_t *conBleLogLbl     = nullptr;
 
 // Page 6: SYSTEM pointers
+#if LV_USE_CHART
 static lv_obj_t *sysChart         = nullptr;
 static lv_chart_series_t *serSpeed = nullptr;
 static lv_chart_series_t *serPower = nullptr;
+#endif
 static lv_obj_t *sysMemLbl        = nullptr;
 static lv_obj_t *sysTouchLbl      = nullptr;
 static lv_obj_t *sysTouchDot      = nullptr;
@@ -404,9 +414,9 @@ static void updateWifiScanResults();
 static void restartBleAdvertising();
 
 static inline uint32_t modeAccentColor() {
-  if (vs.mode == MODE_ECO) return T().green;
+  if (vs.mode == MODE_ECO) return pal().green;
   if (vs.mode == MODE_SPORT) return VISTEON_ORANGE;
-  return T().cyan;
+  return pal().cyan;
 }
 
 static inline int displaySpeed() {
@@ -454,7 +464,7 @@ static void drawVisteonLogoCb(lv_event_t *e) {
   lv_draw_polygon(drawCtx, &polyDsc, rightWedge, 3);
 }
 
-// Crisp Icon-Only Theme Toggle (Sun in Dark Mode, Crescent Moon in Light Mode)
+// Icon-Only Theme Toggle (Sun in Dark Mode, Crescent Moon in Light Mode)
 static void drawThemeIconCb(lv_event_t *e) {
   lv_obj_t *obj = lv_event_get_target(e);
   lv_draw_ctx_t *ctx = lv_event_get_draw_ctx(e);
@@ -465,7 +475,6 @@ static void drawThemeIconCb(lv_event_t *e) {
   const int cy = (a.y1 + a.y2) / 2;
 
   if (!lightTheme) {
-    // Dark Mode active -> Show Sun icon to switch to Light Mode
     lv_draw_rect_dsc_t sunCore;
     lv_draw_rect_dsc_init(&sunCore);
     sunCore.bg_color = lv_color_hex(0xFBBF24);
@@ -494,7 +503,6 @@ static void drawThemeIconCb(lv_event_t *e) {
       lv_draw_line(ctx, &ray, &p1, &p2);
     }
   } else {
-    // Light Mode active -> Show Crescent Moon icon to switch to Dark Mode
     lv_draw_rect_dsc_t moon;
     lv_draw_rect_dsc_init(&moon);
     moon.bg_color = lv_color_hex(0x0F172A);
@@ -504,7 +512,6 @@ static void drawThemeIconCb(lv_event_t *e) {
                        (lv_coord_t)(cx + 8), (lv_coord_t)(cy + 8)};
     lv_draw_rect(ctx, &moon, &outer);
 
-    // Cutout circle matching button surface background
     lv_draw_rect_dsc_t cut;
     lv_draw_rect_dsc_init(&cut);
     cut.bg_color = lv_obj_get_style_bg_color(obj, LV_PART_MAIN);
@@ -532,14 +539,14 @@ static void drawNavArrowCb(lv_event_t *e) {
 
   lv_draw_line_dsc_t ld;
   lv_draw_line_dsc_init(&ld);
-  ld.color = lv_color_hex(T().green);
+  ld.color = lv_color_hex(pal().green);
   ld.width = sw;
   ld.round_start = 1;
   ld.round_end   = 1;
 
   lv_draw_rect_dsc_t headDsc;
   lv_draw_rect_dsc_init(&headDsc);
-  headDsc.bg_color = lv_color_hex(T().green);
+  headDsc.bg_color = lv_color_hex(pal().green);
   headDsc.bg_opa   = LV_OPA_COVER;
 
   if (vs.navDir == NAV_RIGHT) {
@@ -608,7 +615,7 @@ static void drawAdasCanvasCb(lv_event_t *e) {
   // 1. Perspective Road Surface
   lv_draw_rect_dsc_t roadDsc;
   lv_draw_rect_dsc_init(&roadDsc);
-  roadDsc.bg_color = lv_color_hex(T().road);
+  roadDsc.bg_color = lv_color_hex(pal().road);
   roadDsc.bg_opa   = LV_OPA_COVER;
 
   lv_point_t roadPoly[4] = {
@@ -622,7 +629,7 @@ static void drawAdasCanvasCb(lv_event_t *e) {
   // 2. Horizon Line
   lv_draw_line_dsc_t horzDsc;
   lv_draw_line_dsc_init(&horzDsc);
-  horzDsc.color = lv_color_hex(T().border);
+  horzDsc.color = lv_color_hex(pal().border);
   horzDsc.width = 1;
   lv_point_t h1 = {(lv_coord_t)(a.x1 + 4), (lv_coord_t)vy};
   lv_point_t h2 = {(lv_coord_t)(a.x2 - 4), (lv_coord_t)vy};
@@ -631,7 +638,7 @@ static void drawAdasCanvasCb(lv_event_t *e) {
   // 3. Perspective Center Dashes
   lv_draw_line_dsc_t dashDsc;
   lv_draw_line_dsc_init(&dashDsc);
-  dashDsc.color = lv_color_hex(T().muted);
+  dashDsc.color = lv_color_hex(pal().muted);
   dashDsc.opa   = LV_OPA_70;
   dashDsc.round_start = 1;
   dashDsc.round_end   = 1;
@@ -651,7 +658,7 @@ static void drawAdasCanvasCb(lv_event_t *e) {
   // 4. Active LKA Boundary Rails (Turns crimson during overspeed)
   lv_draw_line_dsc_t railDsc;
   lv_draw_line_dsc_init(&railDsc);
-  uint32_t railCol = isOverspeed ? T().red : (vs.lkaActive && vs.gear == 'D' ? modeAccentColor() : T().muted);
+  uint32_t railCol = isOverspeed ? pal().red : (vs.lkaActive && vs.gear == 'D' ? modeAccentColor() : pal().muted);
   railDsc.color = lv_color_hex(railCol);
   railDsc.width = 3;
   railDsc.opa   = LV_OPA_90;
@@ -663,11 +670,9 @@ static void drawAdasCanvasCb(lv_event_t *e) {
   lv_draw_line(ctx, &railDsc, &lTop, &lBot);
   lv_draw_line(ctx, &railDsc, &rTop, &rBot);
 
-  // 5. Radar-Tracked Lead Vehicle (Visible when moving or in D)
+  // 5. Radar-Tracked Lead Vehicle (Visible when in Drive)
   if (vs.gear == 'D') {
-    float normDist = (vs.leadDistM - 15.0f) / 60.0f;
-    if (normDist < 0.0f) normDist = 0.0f;
-    if (normDist > 1.0f) normDist = 1.0f;
+    float normDist = clampFloat((vs.leadDistM - 15.0f) / 60.0f, 0.0f, 1.0f);
     float leadT = 0.56f - normDist * 0.34f;
     int leadY = vy + (int)(leadT * rH);
     int leadW = 28 + (int)(leadT * 42.0f);
@@ -676,7 +681,7 @@ static void drawAdasCanvasCb(lv_event_t *e) {
     if (vs.accActive && vs.speedKmh > 5.0f) {
       lv_draw_arc_dsc_t radDsc;
       lv_draw_arc_dsc_init(&radDsc);
-      radDsc.color = lv_color_hex(vs.leadDistM < 22.0f ? T().amber : T().cyan);
+      radDsc.color = lv_color_hex(vs.leadDistM < 22.0f ? pal().amber : pal().cyan);
       radDsc.width = 2;
       radDsc.opa   = LV_OPA_60;
       lv_point_t rCenter = {(lv_coord_t)cx, (lv_coord_t)(a.y2 - 58)};
@@ -697,7 +702,7 @@ static void drawAdasCanvasCb(lv_event_t *e) {
 
     lv_draw_rect_dsc_t tailDsc;
     lv_draw_rect_dsc_init(&tailDsc);
-    tailDsc.bg_color = lv_color_hex(T().red);
+    tailDsc.bg_color = lv_color_hex(pal().red);
     tailDsc.bg_opa   = LV_OPA_COVER;
     tailDsc.radius   = 2;
     lv_area_t ltL = {(lv_coord_t)(lb.x1 + 3), (lv_coord_t)(lb.y2 - 7), (lv_coord_t)(lb.x1 + 11), (lv_coord_t)(lb.y2 - 3)};
@@ -712,7 +717,7 @@ static void drawAdasCanvasCb(lv_event_t *e) {
 
   lv_draw_rect_dsc_t glowDsc;
   lv_draw_rect_dsc_init(&glowDsc);
-  glowDsc.bg_color = lv_color_hex(isOverspeed ? T().red : modeAccentColor());
+  glowDsc.bg_color = lv_color_hex(isOverspeed ? pal().red : modeAccentColor());
   glowDsc.bg_opa   = LV_OPA_20;
   glowDsc.radius   = 18;
   lv_area_t gBox = {(lv_coord_t)(cx - egoW / 2 - 6), (lv_coord_t)(egoTop - 4),
@@ -724,7 +729,7 @@ static void drawAdasCanvasCb(lv_event_t *e) {
   egoDsc.bg_color     = lv_color_hex(lightTheme ? 0xF8FAFC : 0xDCE6F2);
   egoDsc.bg_opa       = LV_OPA_COVER;
   egoDsc.radius       = 16;
-  egoDsc.border_color = lv_color_hex(T().muted);
+  egoDsc.border_color = lv_color_hex(pal().muted);
   egoDsc.border_width = 1;
   lv_area_t eBox = {(lv_coord_t)(cx - egoW / 2), (lv_coord_t)egoTop,
                     (lv_coord_t)(cx + egoW / 2), (lv_coord_t)(egoTop + egoH)};
@@ -756,7 +761,7 @@ static void drawAdasCanvasCb(lv_event_t *e) {
 
   lv_draw_rect_dsc_t sigDsc;
   lv_draw_rect_dsc_init(&sigDsc);
-  sigDsc.bg_color = lv_color_hex(T().amber);
+  sigDsc.bg_color = lv_color_hex(pal().amber);
   sigDsc.bg_opa   = LV_OPA_COVER;
 
   if (showLeft) {
@@ -793,7 +798,7 @@ static void drawMediaDiscCb(lv_event_t *e) {
   disc.bg_color     = lv_color_hex(0x0B111C);
   disc.bg_opa       = LV_OPA_COVER;
   disc.radius       = LV_RADIUS_CIRCLE;
-  disc.border_color = lv_color_hex(T().border);
+  disc.border_color = lv_color_hex(pal().border);
   disc.border_width = 2;
   lv_area_t dArea = {(lv_coord_t)(cx - r), (lv_coord_t)(cy - r),
                      (lv_coord_t)(cx + r), (lv_coord_t)(cy + r)};
@@ -806,11 +811,11 @@ static void drawMediaDiscCb(lv_event_t *e) {
   arcDsc.rounded = 1;
   uint16_t startA = ((uint16_t)vs.vinylAngle) % 360;
   lv_point_t center = {(lv_coord_t)cx, (lv_coord_t)cy};
-  lv_draw_arc(ctx, &arcDsc, &center, r - 12, startA, (startA + 75) % 360);
+  lv_draw_arc(ctx, &arcDsc, &center, (uint16_t)(r - 12), startA, (uint16_t)((startA + 75) % 360));
 
-  arcDsc.color = lv_color_hex(T().cyan);
+  arcDsc.color = lv_color_hex(pal().cyan);
   arcDsc.width = 2;
-  lv_draw_arc(ctx, &arcDsc, &center, r - 24, (startA + 180) % 360, (startA + 250) % 360);
+  lv_draw_arc(ctx, &arcDsc, &center, (uint16_t)(r - 24), (uint16_t)((startA + 180) % 360), (uint16_t)((startA + 250) % 360));
 
   lv_draw_rect_dsc_t hub;
   lv_draw_rect_dsc_init(&hub);
@@ -821,7 +826,7 @@ static void drawMediaDiscCb(lv_event_t *e) {
                      (lv_coord_t)(cx + 24), (lv_coord_t)(cy + 24)};
   lv_draw_rect(ctx, &hub, &hArea);
 
-  hub.bg_color = lv_color_hex(T().bg);
+  hub.bg_color = lv_color_hex(pal().bg);
   lv_area_t spindle = {(lv_coord_t)(cx - 7), (lv_coord_t)(cy - 7),
                        (lv_coord_t)(cx + 7), (lv_coord_t)(cy + 7)};
   lv_draw_rect(ctx, &hub, &spindle);
@@ -846,7 +851,7 @@ static void drawMediaEqCb(lv_event_t *e) {
   for (int i = 0; i < 12; ++i) {
     int bh = (int)(vs.eqBars[i] * (float)h / 100.0f);
     if (bh < 6) bh = 6;
-    bd.bg_color = lv_color_hex((i % 3 == 0) ? VISTEON_ORANGE : T().cyan);
+    bd.bg_color = lv_color_hex((i % 3 == 0) ? VISTEON_ORANGE : pal().cyan);
     int x = a.x1 + i * (barW + 6);
     lv_area_t r = {(lv_coord_t)x, (lv_coord_t)(a.y2 - bh),
                    (lv_coord_t)(x + barW), (lv_coord_t)a.y2};
@@ -892,7 +897,7 @@ static void drawVehicleChassisCb(lv_event_t *e) {
   for (int i = 0; i < 4; ++i) {
     lv_draw_rect_dsc_t wd;
     lv_draw_rect_dsc_init(&wd);
-    uint32_t wc = (vs.tpms[i] < 29.0f) ? T().red : ((vs.tpms[i] < 32.0f) ? T().amber : T().green);
+    uint32_t wc = (vs.tpms[i] < 29.0f) ? pal().red : ((vs.tpms[i] < 32.0f) ? pal().amber : pal().green);
     wd.bg_color = lv_color_hex(wc);
     wd.bg_opa   = LV_OPA_COVER;
     wd.radius   = 4;
@@ -906,7 +911,7 @@ static void drawVehicleChassisCb(lv_event_t *e) {
   body.bg_color     = lv_color_hex(lightTheme ? 0xE2E8F0 : 0x1E2D42);
   body.bg_opa       = LV_OPA_COVER;
   body.radius       = 26;
-  body.border_color = lv_color_hex(vs.doorsLocked ? T().cyan : T().amber);
+  body.border_color = lv_color_hex(vs.doorsLocked ? pal().cyan : pal().amber);
   body.border_width = 2;
   lv_area_t bArea = {(lv_coord_t)(cx - bodyW / 2), (lv_coord_t)topY,
                      (lv_coord_t)(cx + bodyW / 2), (lv_coord_t)(topY + bodyH)};
@@ -1039,9 +1044,9 @@ static lv_obj_t *makeCard(lv_obj_t *parent, int x, int y, int w, int h,
   lv_obj_set_pos(card, x, y);
   lv_obj_set_size(card, w, h);
   lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_style_bg_color(card, lv_color_hex(bgHex ? bgHex : T().surface), 0);
+  lv_obj_set_style_bg_color(card, lv_color_hex(bgHex ? bgHex : pal().surface), 0);
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_color(card, lv_color_hex(T().border), 0);
+  lv_obj_set_style_border_color(card, lv_color_hex(pal().border), 0);
   lv_obj_set_style_border_width(card, 1, 0);
   lv_obj_set_style_radius(card, radius, 0);
   lv_obj_set_style_pad_all(card, 0, 0);
@@ -1055,10 +1060,10 @@ static lv_obj_t *makeBtn(lv_obj_t *parent, const char *text, int x, int y, int w
   lv_obj_t *btn = lv_btn_create(parent);
   lv_obj_set_pos(btn, x, y);
   lv_obj_set_size(btn, w, h);
-  lv_obj_set_style_bg_color(btn, lv_color_hex(bgHex ? bgHex : T().surfaceAlt), LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(bgHex ? bgHex : pal().surfaceAlt), LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn, lv_color_hex(VISTEON_ORANGE), LV_STATE_PRESSED);
   lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_color(btn, lv_color_hex(T().border), 0);
+  lv_obj_set_style_border_color(btn, lv_color_hex(pal().border), 0);
   lv_obj_set_style_border_width(btn, 1, 0);
   lv_obj_set_style_radius(btn, radius, 0);
   lv_obj_set_style_shadow_width(btn, 0, 0);
@@ -1069,7 +1074,7 @@ static lv_obj_t *makeBtn(lv_obj_t *parent, const char *text, int x, int y, int w
     lv_obj_t *lbl = lv_label_create(btn);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_font(lbl, FONT_SM, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(txtHex ? txtHex : T().text), 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(txtHex ? txtHex : pal().text), 0);
     lv_obj_center(lbl);
   }
   return btn;
@@ -1099,8 +1104,11 @@ static void resetPagePointers() {
 
   conWifiStatusLbl = conWifiDetailLbl = conWifiList = conBleStatusLbl = conBlePhoneLbl = conBleLogLbl = nullptr;
 
-  sysChart = sysMemLbl = sysTouchLbl = sysTouchDot = sysUnitBtnLbl = nullptr;
+#if LV_USE_CHART
+  sysChart = nullptr;
   serSpeed = serPower = nullptr;
+#endif
+  sysMemLbl = sysTouchLbl = sysTouchDot = sysUnitBtnLbl = nullptr;
 }
 
 static void triggerAlert(const char *text, uint32_t colorHex, uint32_t durationMs) {
@@ -1197,49 +1205,47 @@ static void refreshDriveStyles() {
   for (int i = 0; i < 4; ++i) {
     if (!drvGearBtns[i]) continue;
     bool active = (vs.gear == gears[i]);
-    uint32_t gc = (active && vs.gear == 'P') ? VISTEON_ORANGE : (active ? acc : T().surfaceAlt);
+    uint32_t gc = (active && vs.gear == 'P') ? VISTEON_ORANGE : (active ? acc : pal().surfaceAlt);
     lv_obj_set_style_bg_color(drvGearBtns[i], lv_color_hex(gc), 0);
     lv_obj_set_style_text_color(lv_obj_get_child(drvGearBtns[i], 0),
-                                lv_color_hex(active ? 0x06090F : T().text), 0);
+                                lv_color_hex(active ? 0x06090F : pal().text), 0);
   }
   for (int i = 0; i < 3; ++i) {
     if (!drvModeBtns[i]) continue;
     bool active = (vs.mode == i);
-    uint32_t mc = (i == 0) ? T().green : ((i == 1) ? T().cyan : VISTEON_ORANGE);
-    lv_obj_set_style_bg_color(drvModeBtns[i], lv_color_hex(active ? mc : T().surfaceAlt), 0);
+    uint32_t mc = (i == 0) ? pal().green : ((i == 1) ? pal().cyan : VISTEON_ORANGE);
+    lv_obj_set_style_bg_color(drvModeBtns[i], lv_color_hex(active ? mc : pal().surfaceAlt), 0);
     lv_obj_set_style_text_color(lv_obj_get_child(drvModeBtns[i], 0),
-                                lv_color_hex(active ? 0x06090F : T().text), 0);
+                                lv_color_hex(active ? 0x06090F : pal().text), 0);
   }
   if (drvDemoBtn) {
-    lv_obj_set_style_bg_color(drvDemoBtn, lv_color_hex(vs.demoDrive ? T().green : T().surfaceAlt), 0);
+    lv_obj_set_style_bg_color(drvDemoBtn, lv_color_hex(vs.demoDrive ? pal().green : pal().surfaceAlt), 0);
     lv_obj_set_style_text_color(lv_obj_get_child(drvDemoBtn, 0),
-                                lv_color_hex(vs.demoDrive ? 0x06090F : T().text), 0);
+                                lv_color_hex(vs.demoDrive ? 0x06090F : pal().text), 0);
   }
   if (drvHazardBtn) {
-    lv_obj_set_style_bg_color(drvHazardBtn, lv_color_hex(vs.hazard ? T().red : T().surfaceAlt), 0);
+    lv_obj_set_style_bg_color(drvHazardBtn, lv_color_hex(vs.hazard ? pal().red : pal().surfaceAlt), 0);
   }
   if (drvLeftBtn) {
-    lv_obj_set_style_bg_color(drvLeftBtn, lv_color_hex(vs.leftBlinker ? T().amber : T().surfaceAlt), 0);
+    lv_obj_set_style_bg_color(drvLeftBtn, lv_color_hex(vs.leftBlinker ? pal().amber : pal().surfaceAlt), 0);
   }
   if (drvRightBtn) {
-    lv_obj_set_style_bg_color(drvRightBtn, lv_color_hex(vs.rightBlinker ? T().amber : T().surfaceAlt), 0);
+    lv_obj_set_style_bg_color(drvRightBtn, lv_color_hex(vs.rightBlinker ? pal().amber : pal().surfaceAlt), 0);
   }
 }
 
 static void buildPageDrive() {
-  // === LEFT CARD: Dual-Arc Speedometer + Power/Regen + PRND ===
   lv_obj_t *leftCard = makeCard(pageContainer, 12, 6, 254, 362);
 
   drvModeBadge = makeLabel(leftCard, "COMFORT", FONT_SM, modeAccentColor(), 16, 12);
 
-  // Speed Limit Sign Badge
   drvSpeedLimitBox = lv_obj_create(leftCard);
   lv_obj_set_pos(drvSpeedLimitBox, 206, 8);
   lv_obj_set_size(drvSpeedLimitBox, 36, 36);
   lv_obj_clear_flag(drvSpeedLimitBox, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_style_radius(drvSpeedLimitBox, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(drvSpeedLimitBox, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_set_style_border_color(drvSpeedLimitBox, lv_color_hex(T().red), 0);
+  lv_obj_set_style_border_color(drvSpeedLimitBox, lv_color_hex(pal().red), 0);
   lv_obj_set_style_border_width(drvSpeedLimitBox, 3, 0);
   drvSpeedLimitLbl = lv_label_create(drvSpeedLimitBox);
   lv_label_set_text_fmt(drvSpeedLimitLbl, "%d", displayLimit());
@@ -1247,7 +1253,6 @@ static void buildPageDrive() {
   lv_obj_set_style_text_color(drvSpeedLimitLbl, lv_color_hex(0x0F172A), 0);
   lv_obj_center(drvSpeedLimitLbl);
 
-  // Outer Speed Arc
   drvSpeedArc = lv_arc_create(leftCard);
   lv_obj_set_size(drvSpeedArc, 212, 212);
   lv_obj_set_pos(drvSpeedArc, 21, 38);
@@ -1258,12 +1263,11 @@ static void buildPageDrive() {
   lv_obj_remove_style(drvSpeedArc, nullptr, LV_PART_KNOB);
   lv_obj_clear_flag(drvSpeedArc, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_set_style_arc_width(drvSpeedArc, 13, LV_PART_MAIN);
-  lv_obj_set_style_arc_color(drvSpeedArc, lv_color_hex(T().surfaceAlt), LV_PART_MAIN);
+  lv_obj_set_style_arc_color(drvSpeedArc, lv_color_hex(pal().surfaceAlt), LV_PART_MAIN);
   lv_obj_set_style_arc_width(drvSpeedArc, 13, LV_PART_INDICATOR);
   lv_obj_set_style_arc_color(drvSpeedArc, lv_color_hex(modeAccentColor()), LV_PART_INDICATOR);
   lv_obj_set_style_arc_rounded(drvSpeedArc, true, LV_PART_INDICATOR);
 
-  // Inner Symmetrical Power / Regen Arc
   drvPowerArc = lv_arc_create(leftCard);
   lv_obj_set_size(drvPowerArc, 174, 174);
   lv_obj_set_pos(drvPowerArc, 40, 57);
@@ -1275,15 +1279,14 @@ static void buildPageDrive() {
   lv_obj_remove_style(drvPowerArc, nullptr, LV_PART_KNOB);
   lv_obj_clear_flag(drvPowerArc, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_set_style_arc_width(drvPowerArc, 6, LV_PART_MAIN);
-  lv_obj_set_style_arc_color(drvPowerArc, lv_color_hex(T().surfaceDeep), LV_PART_MAIN);
+  lv_obj_set_style_arc_color(drvPowerArc, lv_color_hex(pal().surfaceDeep), LV_PART_MAIN);
   lv_obj_set_style_arc_width(drvPowerArc, 6, LV_PART_INDICATOR);
-  lv_obj_set_style_arc_color(drvPowerArc, lv_color_hex(T().green), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(drvPowerArc, lv_color_hex(pal().green), LV_PART_INDICATOR);
 
-  // Hero Digital Speed Readout
   drvSpeedVal = lv_label_create(leftCard);
   lv_label_set_text_fmt(drvSpeedVal, "%d", displaySpeed());
   lv_obj_set_style_text_font(drvSpeedVal, FONT_HERO, 0);
-  lv_obj_set_style_text_color(drvSpeedVal, lv_color_hex(T().text), 0);
+  lv_obj_set_style_text_color(drvSpeedVal, lv_color_hex(pal().text), 0);
   lv_obj_set_width(drvSpeedVal, 150);
   lv_obj_set_style_text_align(drvSpeedVal, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_pos(drvSpeedVal, 52, 108);
@@ -1291,7 +1294,7 @@ static void buildPageDrive() {
   drvSpeedUnit = lv_label_create(leftCard);
   lv_label_set_text(drvSpeedUnit, vs.useMph ? "MPH" : "KM/H");
   lv_obj_set_style_text_font(drvSpeedUnit, FONT_SM, 0);
-  lv_obj_set_style_text_color(drvSpeedUnit, lv_color_hex(T().muted), 0);
+  lv_obj_set_style_text_color(drvSpeedUnit, lv_color_hex(pal().muted), 0);
   lv_obj_set_width(drvSpeedUnit, 100);
   lv_obj_set_style_text_align(drvSpeedUnit, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_pos(drvSpeedUnit, 77, 162);
@@ -1299,19 +1302,18 @@ static void buildPageDrive() {
   drvPowerVal = lv_label_create(leftCard);
   lv_label_set_text(drvPowerVal, "0 kW");
   lv_obj_set_style_text_font(drvPowerVal, FONT_XS, 0);
-  lv_obj_set_style_text_color(drvPowerVal, lv_color_hex(T().muted), 0);
+  lv_obj_set_style_text_color(drvPowerVal, lv_color_hex(pal().muted), 0);
   lv_obj_set_width(drvPowerVal, 120);
   lv_obj_set_style_text_align(drvPowerVal, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_pos(drvPowerVal, 67, 184);
 
-  // Interactive Manual Throttle Slider
-  makeLabel(leftCard, "THROTTLE", FONT_XS, T().muted, 16, 254);
+  makeLabel(leftCard, "THROTTLE", FONT_XS, pal().muted, 16, 254);
   drvThrottleSld = lv_slider_create(leftCard);
   lv_obj_set_pos(drvThrottleSld, 16, 274);
   lv_obj_set_size(drvThrottleSld, 222, 10);
   lv_slider_set_range(drvThrottleSld, 0, 200);
   lv_slider_set_value(drvThrottleSld, (int)vs.targetSpeedKmh, LV_ANIM_OFF);
-  lv_obj_set_style_bg_color(drvThrottleSld, lv_color_hex(T().surfaceAlt), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(drvThrottleSld, lv_color_hex(pal().surfaceAlt), LV_PART_MAIN);
   lv_obj_set_style_bg_color(drvThrottleSld, lv_color_hex(VISTEON_ORANGE), LV_PART_INDICATOR);
   lv_obj_set_style_bg_color(drvThrottleSld, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
   lv_obj_add_event_cb(drvThrottleSld, [](lv_event_t *e) {
@@ -1325,7 +1327,6 @@ static void buildPageDrive() {
     refreshDriveStyles();
   }, LV_EVENT_VALUE_CHANGED, nullptr);
 
-  // Interactive PRND Shifter
   const char *gStr[4] = {"P", "R", "N", "D"};
   for (int i = 0; i < 4; ++i) {
     drvGearBtns[i] = makeBtn(leftCard, gStr[i], 14 + i * 58, 308, 52, 40,
@@ -1348,8 +1349,7 @@ static void buildPageDrive() {
       }, (void *)(uintptr_t)i);
   }
 
-  // === CENTER CARD: Live ADAS 3D Road & Signals ===
-  lv_obj_t *centerCard = makeCard(pageContainer, 274, 6, 252, 362, T().surfaceDeep);
+  lv_obj_t *centerCard = makeCard(pageContainer, 274, 6, 252, 362, pal().surfaceDeep);
 
   drvLeftBtn = makeBtn(centerCard, LV_SYMBOL_LEFT, 10, 10, 44, 34, [](lv_event_t *e) {
     vs.leftBlinker = !vs.leftBlinker;
@@ -1361,17 +1361,17 @@ static void buildPageDrive() {
     if (vs.demoDrive) {
       vs.gear = 'D';
       sendBlePacket("EVT:GEAR:D");
-      triggerAlert("AUTOPILOT DEMO ENGAGED", T().green, 2500);
+      triggerAlert("AUTOPILOT DEMO ENGAGED", pal().green, 2500);
     } else {
       vs.targetSpeedKmh = 0.0f;
       if (drvThrottleSld) lv_slider_set_value(drvThrottleSld, 0, LV_ANIM_OFF);
-      triggerAlert("DEMO MODE PAUSED", T().muted, 2000);
+      triggerAlert("DEMO MODE PAUSED", pal().muted, 2000);
     }
     refreshDriveStyles();
   });
   drvHazardBtn = makeBtn(centerCard, LV_SYMBOL_WARNING, 144, 10, 44, 34, [](lv_event_t *e) {
     vs.hazard = !vs.hazard;
-    if (vs.hazard) triggerAlert("HAZARD LIGHTS ACTIVE", T().red, 3500);
+    if (vs.hazard) triggerAlert("HAZARD LIGHTS ACTIVE", pal().red, 3500);
     refreshDriveStyles();
   });
   drvRightBtn = makeBtn(centerCard, LV_SYMBOL_RIGHT, 194, 10, 48, 34, [](lv_event_t *e) {
@@ -1386,33 +1386,30 @@ static void buildPageDrive() {
   lv_obj_set_size(drvAdasCanvas, 240, 266);
   lv_obj_add_event_cb(drvAdasCanvas, drawAdasCanvasCb, LV_EVENT_DRAW_MAIN, nullptr);
 
-  lv_obj_t *adasBar = makeCard(centerCard, 10, 322, 232, 30, T().surface, 8);
-  drvAdasFooter = makeLabel(adasBar, "PARKED  |  READY TO DRIVE", FONT_XS, T().cyan, 14, 7);
+  lv_obj_t *adasBar = makeCard(centerCard, 10, 322, 232, 30, pal().surface, 8);
+  drvAdasFooter = makeLabel(adasBar, "PARKED  |  READY TO DRIVE", FONT_XS, pal().cyan, 14, 7);
 
-  // === RIGHT COLUMN: Contextual Smart Stack ===
-  // 1. Mini Navigation Card
   lv_obj_t *navCard = makeCard(pageContainer, 534, 6, 254, 106);
   lv_obj_add_flag(navCard, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(navCard, [](lv_event_t *e) { selectPage(PAGE_NAV); }, LV_EVENT_CLICKED, nullptr);
 
-  drvNavArrowBox = makeCard(navCard, 12, 16, 48, 48, T().surfaceAlt, 12);
+  drvNavArrowBox = makeCard(navCard, 12, 16, 48, 48, pal().surfaceAlt, 12);
   lv_obj_add_event_cb(drvNavArrowBox, drawNavArrowCb, LV_EVENT_DRAW_MAIN, nullptr);
 
-  drvNavDistLbl   = makeLabel(navCard, "250 m", FONT_LG, T().text, 70, 14);
-  drvNavStreetLbl = makeLabel(navCard, vs.navStreet, FONT_SM, T().muted, 70, 40, 174);
-  drvNavEtaLbl    = makeLabel(navCard, "16 min  |  11.4 km", FONT_XS, T().green, 12, 78, 232);
+  drvNavDistLbl   = makeLabel(navCard, "250 m", FONT_LG, pal().text, 70, 14);
+  drvNavStreetLbl = makeLabel(navCard, vs.navStreet, FONT_SM, pal().muted, 70, 40, 174);
+  drvNavEtaLbl    = makeLabel(navCard, "16 min  |  11.4 km", FONT_XS, pal().green, 12, 78, 232);
 
-  // 2. Mini Live Phone Media Card
   lv_obj_t *medCard = makeCard(pageContainer, 534, 120, 254, 124);
   makeLabel(medCard, LV_SYMBOL_AUDIO "  NOW PLAYING", FONT_XS, VISTEON_ORANGE, 14, 10);
-  drvMediaTitle  = makeLabel(medCard, vs.mediaTitle, FONT_MD, T().text, 14, 28, 226);
-  drvMediaArtist = makeLabel(medCard, vs.mediaArtist, FONT_XS, T().muted, 14, 50, 226);
+  drvMediaTitle  = makeLabel(medCard, vs.mediaTitle, FONT_MD, pal().text, 14, 28, 226);
+  drvMediaArtist = makeLabel(medCard, vs.mediaArtist, FONT_XS, pal().muted, 14, 50, 226);
 
   drvMediaProg = lv_bar_create(medCard);
   lv_obj_set_pos(drvMediaProg, 14, 70);
   lv_obj_set_size(drvMediaProg, 226, 4);
   lv_bar_set_value(drvMediaProg, vs.mediaProgress, LV_ANIM_OFF);
-  lv_obj_set_style_bg_color(drvMediaProg, lv_color_hex(T().surfaceAlt), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(drvMediaProg, lv_color_hex(pal().surfaceAlt), LV_PART_MAIN);
   lv_obj_set_style_bg_color(drvMediaProg, lv_color_hex(VISTEON_ORANGE), LV_PART_INDICATOR);
 
   makeBtn(medCard, LV_SYMBOL_PREV, 14, 82, 68, 32, [](lv_event_t *e) {
@@ -1429,18 +1426,17 @@ static void buildPageDrive() {
     sendBlePacket("CMD:MEDIA:NEXT");
   });
 
-  // 3. EV Energy & Drive Mode Card
   lv_obj_t *evCard = makeCard(pageContainer, 534, 252, 254, 116);
-  drvSocLbl = makeLabel(evCard, LV_SYMBOL_CHARGE " 84%   |   412 km", FONT_SM, T().text, 14, 10);
+  drvSocLbl = makeLabel(evCard, LV_SYMBOL_CHARGE " 84%   |   412 km", FONT_SM, pal().text, 14, 10);
 
   drvSocBar = lv_bar_create(evCard);
   lv_obj_set_pos(drvSocBar, 14, 34);
   lv_obj_set_size(drvSocBar, 226, 8);
   lv_bar_set_value(drvSocBar, (int)vs.socPercent, LV_ANIM_OFF);
-  lv_obj_set_style_bg_color(drvSocBar, lv_color_hex(T().surfaceAlt), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(drvSocBar, lv_color_hex(T().green), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(drvSocBar, lv_color_hex(pal().surfaceAlt), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(drvSocBar, lv_color_hex(pal().green), LV_PART_INDICATOR);
 
-  drvEffLbl = makeLabel(evCard, "14.2 kWh/100km  |  Trip 48.6 km", FONT_XS, T().muted, 14, 48);
+  drvEffLbl = makeLabel(evCard, "14.2 kWh/100km  |  Trip 48.6 km", FONT_XS, pal().muted, 14, 48);
 
   const char *mLbls[3] = {"ECO", "COMFORT", "SPORT"};
   int mX[3] = {12, 84, 176};
@@ -1481,73 +1477,71 @@ static void applyRoutePreset(int idx) {
     strncpy(vs.navDest, "City Center Plaza", sizeof(vs.navDest) - 1);
   }
   vs.navRoutePct = 20;
-  triggerAlert("ROUTE GUIDANCE UPDATED", T().green, 2500);
+  triggerAlert("ROUTE GUIDANCE UPDATED", pal().green, 2500);
   if (navBigArrowBox) lv_obj_invalidate(navBigArrowBox);
 }
 
 static void buildPageNav() {
   lv_obj_t *hudCard = makeCard(pageContainer, 12, 6, 452, 220);
-  makeLabel(hudCard, LV_SYMBOL_GPS "  HEADS-UP NAVIGATION", FONT_XS, T().green, 18, 14);
+  makeLabel(hudCard, LV_SYMBOL_GPS "  HEADS-UP NAVIGATION", FONT_XS, pal().green, 18, 14);
 
-  navBigArrowBox = makeCard(hudCard, 18, 42, 114, 114, T().surfaceAlt, 18);
+  navBigArrowBox = makeCard(hudCard, 18, 42, 114, 114, pal().surfaceAlt, 18);
   lv_obj_add_event_cb(navBigArrowBox, drawNavArrowCb, LV_EVENT_DRAW_MAIN, nullptr);
 
-  navBigDistLbl   = makeLabel(hudCard, "250 m", FONT_XL, T().text, 148, 44);
-  navBigActionLbl = makeLabel(hudCard, "TURN RIGHT", FONT_MD, T().green, 148, 82);
-  navBigStreetLbl = makeLabel(hudCard, vs.navStreet, FONT_MD, T().muted, 148, 112, 290);
+  navBigDistLbl   = makeLabel(hudCard, "250 m", FONT_XL, pal().text, 148, 44);
+  navBigActionLbl = makeLabel(hudCard, "TURN RIGHT", FONT_MD, pal().green, 148, 82);
+  navBigStreetLbl = makeLabel(hudCard, vs.navStreet, FONT_MD, pal().muted, 148, 112, 290);
 
   navProgBar = lv_bar_create(hudCard);
   lv_obj_set_pos(navProgBar, 18, 174);
   lv_obj_set_size(navProgBar, 416, 8);
   lv_bar_set_value(navProgBar, vs.navRoutePct, LV_ANIM_OFF);
-  lv_obj_set_style_bg_color(navProgBar, lv_color_hex(T().surfaceAlt), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(navProgBar, lv_color_hex(T().green), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(navProgBar, lv_color_hex(pal().surfaceAlt), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(navProgBar, lv_color_hex(pal().green), LV_PART_INDICATOR);
 
   navEtaDetailLbl = makeLabel(hudCard, "Dest: Visteon Tech Park  |  16 min  |  11.4 km",
-                              FONT_XS, T().cyan, 18, 190, 416);
+                              FONT_XS, pal().cyan, 18, 190, 416);
 
   lv_obj_t *destCard = makeCard(pageContainer, 12, 234, 452, 134);
-  makeLabel(destCard, "QUICK DESTINATIONS", FONT_XS, T().muted, 18, 14);
+  makeLabel(destCard, "QUICK DESTINATIONS", FONT_XS, pal().muted, 18, 14);
 
   makeBtn(destCard, "Visteon Park\n11.4 km", 16, 42, 136, 74,
-          [](lv_event_t *e) { applyRoutePreset(0); }, nullptr, T().surfaceAlt);
+          [](lv_event_t *e) { applyRoutePreset(0); }, nullptr, pal().surfaceAlt);
   makeBtn(destCard, "BLR Airport\n31.2 km", 158, 42, 136, 74,
-          [](lv_event_t *e) { applyRoutePreset(1); }, nullptr, T().surfaceAlt);
+          [](lv_event_t *e) { applyRoutePreset(1); }, nullptr, pal().surfaceAlt);
   makeBtn(destCard, "City Center\n9.8 km", 300, 42, 136, 74,
-          [](lv_event_t *e) { applyRoutePreset(2); }, nullptr, T().surfaceAlt);
+          [](lv_event_t *e) { applyRoutePreset(2); }, nullptr, pal().surfaceAlt);
 
-  // Right Top: Incoming Call & Phone Status Card
   lv_obj_t *callCard = makeCard(pageContainer, 474, 6, 314, 170);
-  navCallStatusLbl = makeLabel(callCard, "HANDS-FREE CALL CONTROL", FONT_XS, T().cyan, 18, 14);
-  navPhoneBattLbl  = makeLabel(callCard, "Phone: --", FONT_XS, T().muted, 210, 14);
+  navCallStatusLbl = makeLabel(callCard, "HANDS-FREE CALL CONTROL", FONT_XS, pal().cyan, 18, 14);
+  navPhoneBattLbl  = makeLabel(callCard, "Phone: --", FONT_XS, pal().muted, 210, 14);
   navCallerLbl     = makeLabel(callCard, vs.callActive ? vs.callerName : "Ready for Phone Calls",
-                               FONT_LG, T().text, 18, 42, 278);
+                               FONT_LG, pal().text, 18, 42, 278);
 
   makeBtn(callCard, LV_SYMBOL_CALL " ACCEPT", 16, 98, 92, 50, [](lv_event_t *e) {
     vs.callActive = true;
     vs.callAnswered = true;
     sendBlePacket("CMD:CALL:ACCEPT");
-    triggerAlert("CALL ACCEPTED", T().green, 2500);
-  }, nullptr, T().green, 0x06090F);
+    triggerAlert("CALL ACCEPTED", pal().green, 2500);
+  }, nullptr, pal().green, 0x06090F);
 
   makeBtn(callCard, LV_SYMBOL_CLOSE " END", 114, 98, 84, 50, [](lv_event_t *e) {
     vs.callActive = false;
     vs.callAnswered = false;
     strncpy(vs.callerName, "No Active Call", sizeof(vs.callerName) - 1);
     sendBlePacket("CMD:CALL:DECLINE");
-  }, nullptr, T().red, 0xFFFFFF);
+  }, nullptr, pal().red, 0xFFFFFF);
 
   makeBtn(callCard, "SIM CALL", 204, 98, 94, 50, [](lv_event_t *e) {
     vs.callActive = true;
     vs.callAnswered = false;
     strncpy(vs.callerName, "Aditya (Mobile)", sizeof(vs.callerName) - 1);
-    triggerAlert("INCOMING CALL: ADITYA", T().green, 5000);
+    triggerAlert("INCOMING CALL: ADITYA", pal().green, 5000);
   });
 
-  // Right Bottom: Real Phone Notification Stream
   lv_obj_t *notifCard = makeCard(pageContainer, 474, 184, 314, 184);
-  makeLabel(notifCard, LV_SYMBOL_BELL "  NOTIFICATION STREAM", FONT_XS, T().amber, 18, 14);
-  navNotifLbl = makeLabel(notifCard, vs.notifText, FONT_MD, T().text, 18, 44, 278);
+  makeLabel(notifCard, LV_SYMBOL_BELL "  NOTIFICATION STREAM", FONT_XS, pal().amber, 18, 14);
+  navNotifLbl = makeLabel(notifCard, vs.notifText, FONT_MD, pal().text, 18, 44, 278);
   lv_label_set_long_mode(navNotifLbl, LV_LABEL_LONG_WRAP);
 
   makeBtn(notifCard, "DISMISS", 16, 126, 134, 42, [](lv_event_t *e) {
@@ -1567,15 +1561,15 @@ static void refreshMediaEqBtns() {
   for (int i = 0; i < 4; ++i) {
     if (!medEqBtns[i]) continue;
     bool act = (vs.eqPreset == i);
-    lv_obj_set_style_bg_color(medEqBtns[i], lv_color_hex(act ? VISTEON_ORANGE : T().surfaceAlt), 0);
+    lv_obj_set_style_bg_color(medEqBtns[i], lv_color_hex(act ? VISTEON_ORANGE : pal().surfaceAlt), 0);
     lv_obj_set_style_text_color(lv_obj_get_child(medEqBtns[i], 0),
-                                lv_color_hex(act ? 0x06090F : T().text), 0);
+                                lv_color_hex(act ? 0x06090F : pal().text), 0);
   }
 }
 
 static void buildPageMedia() {
   lv_obj_t *artCard = makeCard(pageContainer, 12, 6, 278, 362);
-  makeLabel(artCard, "SPATIAL AUDIO ENGINE", FONT_XS, T().muted, 18, 12);
+  makeLabel(artCard, "SPATIAL AUDIO ENGINE", FONT_XS, pal().muted, 18, 12);
 
   medDiscCanvas = lv_obj_create(artCard);
   lv_obj_remove_style_all(medDiscCanvas);
@@ -1583,7 +1577,7 @@ static void buildPageMedia() {
   lv_obj_set_size(medDiscCanvas, 180, 180);
   lv_obj_add_event_cb(medDiscCanvas, drawMediaDiscCb, LV_EVENT_DRAW_MAIN, nullptr);
 
-  makeLabel(artCard, "LIVE SPECTRUM", FONT_XS, T().cyan, 18, 232);
+  makeLabel(artCard, "LIVE SPECTRUM", FONT_XS, pal().cyan, 18, 232);
   medEqCanvas = lv_obj_create(artCard);
   lv_obj_remove_style_all(medEqCanvas);
   lv_obj_set_pos(medEqCanvas, 18, 254);
@@ -1591,31 +1585,30 @@ static void buildPageMedia() {
   lv_obj_add_event_cb(medEqCanvas, drawMediaEqCb, LV_EVENT_DRAW_MAIN, nullptr);
 
   lv_obj_t *ctrlCard = makeCard(pageContainer, 300, 6, 488, 362);
-  makeLabel(ctrlCard, LV_SYMBOL_BLUETOOTH "  COMPANION LIVE AUDIO", FONT_XS, T().cyan, 24, 16);
+  makeLabel(ctrlCard, LV_SYMBOL_BLUETOOTH "  COMPANION LIVE AUDIO", FONT_XS, pal().cyan, 24, 16);
 
-  medTitleLbl  = makeLabel(ctrlCard, vs.mediaTitle, FONT_XL, T().text, 24, 42, 440);
-  medArtistLbl = makeLabel(ctrlCard, vs.mediaArtist, FONT_LG, T().muted, 24, 80, 440);
+  medTitleLbl  = makeLabel(ctrlCard, vs.mediaTitle, FONT_XL, pal().text, 24, 42, 440);
+  medArtistLbl = makeLabel(ctrlCard, vs.mediaArtist, FONT_LG, pal().muted, 24, 80, 440);
 
-  // Scrubbable Progress Slider (sends CMD:MEDIA:SEEK:<pct> on release)
   medProgSlider = lv_slider_create(ctrlCard);
   lv_obj_set_pos(medProgSlider, 24, 128);
   lv_obj_set_size(medProgSlider, 440, 10);
   lv_slider_set_range(medProgSlider, 0, 100);
   lv_slider_set_value(medProgSlider, vs.mediaProgress, LV_ANIM_OFF);
-  lv_obj_set_style_bg_color(medProgSlider, lv_color_hex(T().surfaceAlt), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(medProgSlider, lv_color_hex(pal().surfaceAlt), LV_PART_MAIN);
   lv_obj_set_style_bg_color(medProgSlider, lv_color_hex(VISTEON_ORANGE), LV_PART_INDICATOR);
   lv_obj_set_style_bg_color(medProgSlider, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
   lv_obj_add_event_cb(medProgSlider, [](lv_event_t *e) {
-    vs.mediaProgress = lv_slider_get_value(lv_event_get_target(e));
+    vs.mediaProgress = (int)lv_slider_get_value(lv_event_get_target(e));
   }, LV_EVENT_VALUE_CHANGED, nullptr);
   lv_obj_add_event_cb(medProgSlider, [](lv_event_t *e) {
-    vs.mediaProgress = lv_slider_get_value(lv_event_get_target(e));
+    vs.mediaProgress = (int)lv_slider_get_value(lv_event_get_target(e));
     char pkt[28];
     snprintf(pkt, sizeof(pkt), "CMD:MEDIA:SEEK:%d", vs.mediaProgress);
     sendBlePacket(pkt);
   }, LV_EVENT_RELEASED, nullptr);
 
-  medTimeLbl = makeLabel(ctrlCard, "00:00 / 03:50", FONT_XS, T().muted, 24, 146);
+  medTimeLbl = makeLabel(ctrlCard, "00:00 / 03:50", FONT_XS, pal().muted, 24, 146);
 
   makeBtn(ctrlCard, LV_SYMBOL_PREV "  PREV", 24, 174, 124, 52, [](lv_event_t *e) {
     sendBlePacket("CMD:MEDIA:PREV");
@@ -1631,19 +1624,18 @@ static void buildPageMedia() {
     sendBlePacket("CMD:MEDIA:NEXT");
   });
 
-  // Volume Bar & Mute (throttled BLE updates)
-  medVolLbl = makeLabel(ctrlCard, LV_SYMBOL_VOLUME_MAX "  70%", FONT_SM, T().text, 24, 250);
+  medVolLbl = makeLabel(ctrlCard, LV_SYMBOL_VOLUME_MAX "  70%", FONT_SM, pal().text, 24, 250);
   medVolSlider = lv_slider_create(ctrlCard);
   lv_obj_set_pos(medVolSlider, 114, 254);
   lv_obj_set_size(medVolSlider, 270, 12);
   lv_slider_set_range(medVolSlider, 0, 100);
   lv_slider_set_value(medVolSlider, vs.mediaVolume, LV_ANIM_OFF);
-  lv_obj_set_style_bg_color(medVolSlider, lv_color_hex(T().surfaceAlt), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(medVolSlider, lv_color_hex(T().cyan), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(medVolSlider, lv_color_hex(pal().surfaceAlt), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(medVolSlider, lv_color_hex(pal().cyan), LV_PART_INDICATOR);
   lv_obj_set_style_bg_color(medVolSlider, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
   lv_obj_add_event_cb(medVolSlider, [](lv_event_t *e) {
     vs.mediaMuted = false;
-    vs.mediaVolume = lv_slider_get_value(lv_event_get_target(e));
+    vs.mediaVolume = (int)lv_slider_get_value(lv_event_get_target(e));
     uint32_t now = millis();
     if (now - lastVolTxMs >= 100) {
       lastVolTxMs = now;
@@ -1654,7 +1646,7 @@ static void buildPageMedia() {
   }, LV_EVENT_VALUE_CHANGED, nullptr);
   lv_obj_add_event_cb(medVolSlider, [](lv_event_t *e) {
     vs.mediaMuted = false;
-    vs.mediaVolume = lv_slider_get_value(lv_event_get_target(e));
+    vs.mediaVolume = (int)lv_slider_get_value(lv_event_get_target(e));
     char pkt[24];
     snprintf(pkt, sizeof(pkt), "CMD:VOL:%d", vs.mediaVolume);
     sendBlePacket(pkt);
@@ -1665,8 +1657,7 @@ static void buildPageMedia() {
     sendBlePacket(vs.mediaMuted ? "CMD:VOL:MUTE" : "CMD:VOL:UNMUTE");
   });
 
-  // Acoustic EQ Presets
-  makeLabel(ctrlCard, "CABIN ACOUSTICS", FONT_XS, T().muted, 24, 290);
+  makeLabel(ctrlCard, "CABIN ACOUSTICS", FONT_XS, pal().muted, 24, 290);
   const char *eqNames[4] = {"STUDIO", "BASS+", "VOCAL", "SPATIAL"};
   for (int i = 0; i < 4; ++i) {
     medEqBtns[i] = makeBtn(ctrlCard, eqNames[i], 24 + i * 112, 312, 104, 34,
@@ -1693,27 +1684,27 @@ static void refreshVehicleWidgets() {
     char buf[24];
     snprintf(buf, sizeof(buf), "%s\n%.1f PSI", posTag[i], vs.tpms[i]);
     lv_label_set_text(vehTpmsLbl[i], buf);
-    uint32_t c = (vs.tpms[i] < 29.0f) ? T().red : ((vs.tpms[i] < 32.0f) ? T().amber : T().green);
+    uint32_t c = (vs.tpms[i] < 29.0f) ? pal().red : ((vs.tpms[i] < 32.0f) ? pal().amber : pal().green);
     lv_obj_set_style_text_color(vehTpmsLbl[i], lv_color_hex(c), 0);
   }
-  if (vehLightBtn) lv_obj_set_style_bg_color(vehLightBtn, lv_color_hex(vs.headlightsOn ? T().amber : T().surfaceAlt), 0);
-  if (vehLockBtn)  lv_obj_set_style_bg_color(vehLockBtn,  lv_color_hex(vs.doorsLocked ? T().cyan : T().surfaceAlt), 0);
-  if (vehTrunkBtn) lv_obj_set_style_bg_color(vehTrunkBtn, lv_color_hex(vs.trunkOpen ? VISTEON_ORANGE : T().surfaceAlt), 0);
+  if (vehLightBtn) lv_obj_set_style_bg_color(vehLightBtn, lv_color_hex(vs.headlightsOn ? pal().amber : pal().surfaceAlt), 0);
+  if (vehLockBtn)  lv_obj_set_style_bg_color(vehLockBtn,  lv_color_hex(vs.doorsLocked ? pal().cyan : pal().surfaceAlt), 0);
+  if (vehTrunkBtn) lv_obj_set_style_bg_color(vehTrunkBtn, lv_color_hex(vs.trunkOpen ? VISTEON_ORANGE : pal().surfaceAlt), 0);
 
   if (vehDrvTempLbl) {
     lv_label_set_text_fmt(vehDrvTempLbl, "%d C", vs.tempDriver);
-    lv_obj_set_style_text_color(vehDrvTempLbl, lv_color_hex(vs.tempDriver >= 24 ? VISTEON_ORANGE : T().cyan), 0);
+    lv_obj_set_style_text_color(vehDrvTempLbl, lv_color_hex(vs.tempDriver >= 24 ? VISTEON_ORANGE : pal().cyan), 0);
   }
   if (vehPasTempLbl) {
     lv_label_set_text_fmt(vehPasTempLbl, "%d C", vs.tempPassenger);
-    lv_obj_set_style_text_color(vehPasTempLbl, lv_color_hex(vs.tempPassenger >= 24 ? VISTEON_ORANGE : T().cyan), 0);
+    lv_obj_set_style_text_color(vehPasTempLbl, lv_color_hex(vs.tempPassenger >= 24 ? VISTEON_ORANGE : pal().cyan), 0);
   }
   if (vehFanLbl)     lv_label_set_text_fmt(vehFanLbl, "FAN LVL %d", vs.fanSpeed);
-  if (vehAcBtn)      lv_obj_set_style_bg_color(vehAcBtn, lv_color_hex(vs.acOn ? T().cyan : T().surfaceAlt), 0);
-  if (vehAutoBtn)    lv_obj_set_style_bg_color(vehAutoBtn, lv_color_hex(vs.autoClimate ? T().green : T().surfaceAlt), 0);
-  if (vehDefrostBtn) lv_obj_set_style_bg_color(vehDefrostBtn, lv_color_hex(vs.defrostOn ? VISTEON_ORANGE : T().surfaceAlt), 0);
+  if (vehAcBtn)      lv_obj_set_style_bg_color(vehAcBtn, lv_color_hex(vs.acOn ? pal().cyan : pal().surfaceAlt), 0);
+  if (vehAutoBtn)    lv_obj_set_style_bg_color(vehAutoBtn, lv_color_hex(vs.autoClimate ? pal().green : pal().surfaceAlt), 0);
+  if (vehDefrostBtn) lv_obj_set_style_bg_color(vehDefrostBtn, lv_color_hex(vs.defrostOn ? VISTEON_ORANGE : pal().surfaceAlt), 0);
   if (vehSeatBtn) {
-    lv_obj_set_style_bg_color(vehSeatBtn, lv_color_hex(vs.seatHeat > 0 ? T().red : T().surfaceAlt), 0);
+    lv_obj_set_style_bg_color(vehSeatBtn, lv_color_hex(vs.seatHeat > 0 ? pal().red : pal().surfaceAlt), 0);
     lv_label_set_text_fmt(lv_obj_get_child(vehSeatBtn, 0), "SEAT %d", vs.seatHeat);
   }
   if (vehRegenBtn) {
@@ -1724,7 +1715,7 @@ static void refreshVehicleWidgets() {
 
 static void buildPageVehicle() {
   lv_obj_t *carCard = makeCard(pageContainer, 12, 6, 386, 362);
-  makeLabel(carCard, "CHASSIS & TIRE PRESSURE (TPMS)", FONT_XS, T().muted, 16, 12);
+  makeLabel(carCard, "CHASSIS & TIRE PRESSURE (TPMS)", FONT_XS, pal().muted, 16, 12);
 
   vehChassisCanvas = lv_obj_create(carCard);
   lv_obj_remove_style_all(vehChassisCanvas);
@@ -1735,7 +1726,7 @@ static void buildPageVehicle() {
   int tx[4] = {16, 294, 16, 294};
   int ty[4] = {76, 76, 198, 198};
   for (int i = 0; i < 4; ++i) {
-    lv_obj_t *box = makeCard(carCard, tx[i], ty[i], 78, 52, T().surfaceAlt, 10);
+    lv_obj_t *box = makeCard(carCard, tx[i], ty[i], 78, 52, pal().surfaceAlt, 10);
     vehTpmsLbl[i] = lv_label_create(box);
     lv_obj_set_style_text_font(vehTpmsLbl[i], FONT_XS, 0);
     lv_obj_set_style_text_align(vehTpmsLbl[i], LV_TEXT_ALIGN_CENTER, 0);
@@ -1748,7 +1739,7 @@ static void buildPageVehicle() {
   });
   vehLockBtn = makeBtn(carCard, "LOCK", 104, 304, 84, 42, [](lv_event_t *e) {
     vs.doorsLocked = !vs.doorsLocked;
-    triggerAlert(vs.doorsLocked ? "DOORS LOCKED" : "DOORS UNLOCKED", T().cyan, 2000);
+    triggerAlert(vs.doorsLocked ? "DOORS LOCKED" : "DOORS UNLOCKED", pal().cyan, 2000);
     refreshVehicleWidgets();
   });
   vehTrunkBtn = makeBtn(carCard, "TRUNK", 194, 304, 84, 42, [](lv_event_t *e) {
@@ -1759,49 +1750,49 @@ static void buildPageVehicle() {
   makeBtn(carCard, "TEST PSI", 284, 304, 88, 42, [](lv_event_t *e) {
     if (vs.tpms[3] > 30.0f) {
       vs.tpms[3] = 24.5f;
-      triggerAlert("LOW TIRE PRESSURE: REAR RIGHT 24.5 PSI", T().red, 5000);
+      triggerAlert("LOW TIRE PRESSURE: REAR RIGHT 24.5 PSI", pal().red, 5000);
     } else {
       vs.tpms[3] = 34.1f;
-      triggerAlert("ALL TIRES NOMINAL", T().green, 2500);
+      triggerAlert("ALL TIRES NOMINAL", pal().green, 2500);
     }
     refreshVehicleWidgets();
   });
 
   lv_obj_t *hvacCard = makeCard(pageContainer, 408, 6, 380, 224);
-  makeLabel(hvacCard, "DUAL-ZONE CABIN CLIMATE", FONT_XS, T().muted, 16, 12);
+  makeLabel(hvacCard, "DUAL-ZONE CABIN CLIMATE", FONT_XS, pal().muted, 16, 12);
 
-  makeLabel(hvacCard, "DRIVER", FONT_XS, T().muted, 58, 36);
+  makeLabel(hvacCard, "DRIVER", FONT_XS, pal().muted, 58, 36);
   makeBtn(hvacCard, "-", 16, 56, 38, 44, [](lv_event_t *e) {
     if (vs.tempDriver > 16) vs.tempDriver--;
     refreshVehicleWidgets();
   });
-  vehDrvTempLbl = makeLabel(hvacCard, "21 C", FONT_LG, T().cyan, 62, 66);
+  vehDrvTempLbl = makeLabel(hvacCard, "21 C", FONT_LG, pal().cyan, 62, 66);
   makeBtn(hvacCard, "+", 126, 56, 38, 44, [](lv_event_t *e) {
     if (vs.tempDriver < 30) vs.tempDriver++;
     refreshVehicleWidgets();
   });
 
-  makeLabel(hvacCard, "PASSENGER", FONT_XS, T().muted, 246, 36);
+  makeLabel(hvacCard, "PASSENGER", FONT_XS, pal().muted, 246, 36);
   makeBtn(hvacCard, "-", 214, 56, 38, 44, [](lv_event_t *e) {
     if (vs.tempPassenger > 16) vs.tempPassenger--;
     refreshVehicleWidgets();
   });
-  vehPasTempLbl = makeLabel(hvacCard, "22 C", FONT_LG, T().cyan, 260, 66);
+  vehPasTempLbl = makeLabel(hvacCard, "22 C", FONT_LG, pal().cyan, 260, 66);
   makeBtn(hvacCard, "+", 324, 56, 38, 44, [](lv_event_t *e) {
     if (vs.tempPassenger < 30) vs.tempPassenger++;
     refreshVehicleWidgets();
   });
 
-  vehFanLbl = makeLabel(hvacCard, "FAN LVL 3", FONT_XS, T().text, 16, 120);
+  vehFanLbl = makeLabel(hvacCard, "FAN LVL 3", FONT_XS, pal().text, 16, 120);
   lv_obj_t *fanSld = lv_slider_create(hvacCard);
   lv_obj_set_pos(fanSld, 110, 122);
   lv_obj_set_size(fanSld, 250, 12);
   lv_slider_set_range(fanSld, 0, 5);
   lv_slider_set_value(fanSld, vs.fanSpeed, LV_ANIM_OFF);
-  lv_obj_set_style_bg_color(fanSld, lv_color_hex(T().surfaceAlt), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(fanSld, lv_color_hex(T().cyan), LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(fanSld, lv_color_hex(pal().surfaceAlt), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(fanSld, lv_color_hex(pal().cyan), LV_PART_INDICATOR);
   lv_obj_add_event_cb(fanSld, [](lv_event_t *e) {
-    vs.fanSpeed = lv_slider_get_value(lv_event_get_target(e));
+    vs.fanSpeed = (int)lv_slider_get_value(lv_event_get_target(e));
     refreshVehicleWidgets();
   }, LV_EVENT_VALUE_CHANGED, nullptr);
 
@@ -1819,16 +1810,16 @@ static void buildPageVehicle() {
   });
 
   lv_obj_t *hvCard = makeCard(pageContainer, 408, 238, 380, 130);
-  makeLabel(hvCard, LV_SYMBOL_CHARGE "  HV POWERTRAIN & THERMAL", FONT_XS, T().green, 16, 12);
+  makeLabel(hvCard, LV_SYMBOL_CHARGE "  HV POWERTRAIN & THERMAL", FONT_XS, pal().green, 16, 12);
   vehHvStatsLbl = makeLabel(hvCard, "Pack: 398.4 V   |   Temp: 31 C   |   SOH: 99%\nOdometer: 12480.4 km   |   Trip A: 48.6 km",
-                            FONT_SM, T().text, 16, 36);
+                            FONT_SM, pal().text, 16, 36);
   vehRegenBtn = makeBtn(hvCard, "REGEN: STD", 16, 82, 170, 36, [](lv_event_t *e) {
     vs.regenLevel = (vs.regenLevel + 1) % 3;
     refreshVehicleWidgets();
-  }, nullptr, T().surfaceAlt);
+  }, nullptr, pal().surfaceAlt);
   makeBtn(hvCard, "RESET TRIP A", 198, 82, 166, 36, [](lv_event_t *e) {
     vs.tripKm = 0.0f;
-    triggerAlert("TRIP A ODOMETER RESET", T().cyan, 2000);
+    triggerAlert("TRIP A ODOMETER RESET", pal().cyan, 2000);
   });
 
   refreshVehicleWidgets();
@@ -1840,6 +1831,8 @@ static void buildPageVehicle() {
 static void openWifiPasswordModal(const char *ssid) {
   strncpy(pendingWifiSsid, ssid, sizeof(pendingWifiSsid) - 1);
   pendingWifiSsid[sizeof(pendingWifiSsid) - 1] = '\0';
+
+#if LV_USE_KEYBOARD && LV_USE_TEXTAREA
   if (kbModal) { lv_obj_del(kbModal); kbModal = nullptr; }
 
   kbModal = lv_obj_create(lv_layer_top());
@@ -1879,12 +1872,15 @@ static void openWifiPasswordModal(const char *ssid) {
       kbModal = nullptr;
     }
   }, LV_EVENT_ALL, nullptr);
+#else
+  triggerAlert("ENABLE LV_USE_KEYBOARD IN lv_conf.h", pal().amber, 3000);
+#endif
 }
 
 static void buildPageConnect() {
   lv_obj_t *wifiCard = makeCard(pageContainer, 12, 6, 384, 362);
-  conWifiStatusLbl = makeLabel(wifiCard, LV_SYMBOL_WIFI "  WI-FI MANAGER", FONT_MD, T().cyan, 16, 12);
-  conWifiDetailLbl = makeLabel(wifiCard, "Checking radio...", FONT_XS, T().muted, 16, 38, 352);
+  conWifiStatusLbl = makeLabel(wifiCard, LV_SYMBOL_WIFI "  WI-FI MANAGER", FONT_MD, pal().cyan, 16, 12);
+  conWifiDetailLbl = makeLabel(wifiCard, "Checking radio...", FONT_XS, pal().muted, 16, 38, 352);
 
   makeBtn(wifiCard, "CONNECT ANSHIK", 16, 66, 174, 38, [](lv_event_t *e) {
     startWifiConnection(SAVED_SSID, SAVED_PASSWORD);
@@ -1898,32 +1894,32 @@ static void buildPageConnect() {
   lv_obj_set_pos(conWifiList, 16, 114);
   lv_obj_set_size(conWifiList, 352, 234);
   lv_obj_set_scroll_dir(conWifiList, LV_DIR_VER);
-  lv_obj_set_style_bg_color(conWifiList, lv_color_hex(T().surfaceDeep), 0);
-  lv_obj_set_style_border_color(conWifiList, lv_color_hex(T().border), 0);
+  lv_obj_set_style_bg_color(conWifiList, lv_color_hex(pal().surfaceDeep), 0);
+  lv_obj_set_style_border_color(conWifiList, lv_color_hex(pal().border), 0);
   lv_obj_set_style_radius(conWifiList, 10, 0);
   lv_obj_set_style_pad_all(conWifiList, 6, 0);
-  makeLabel(conWifiList, "Tap SCAN 2.4G to discover networks.\nTap any SSID to enter password.", FONT_XS, T().muted, 8, 8);
+  makeLabel(conWifiList, "Tap SCAN 2.4G to discover networks.\nTap any SSID to enter password.", FONT_XS, pal().muted, 8, 8);
 
   lv_obj_t *bleCard = makeCard(pageContainer, 406, 6, 382, 362);
   conBleStatusLbl = makeLabel(bleCard, bleConnected ? LV_SYMBOL_BLUETOOTH "  PHONE CONNECTED" : LV_SYMBOL_BLUETOOTH "  ADVERTISING: Visteon-Lunet",
-                              FONT_MD, bleConnected ? T().green : T().cyan, 16, 12);
-  conBlePhoneLbl  = makeLabel(bleCard, "MTU 247  |  Phone Batt: --", FONT_XS, T().muted, 16, 38);
+                              FONT_MD, bleConnected ? pal().green : pal().cyan, 16, 12);
+  conBlePhoneLbl  = makeLabel(bleCard, "MTU 247  |  Phone Batt: --", FONT_XS, pal().muted, 16, 38);
 
   makeBtn(bleCard, "RESTART ADV", 16, 66, 114, 38, [](lv_event_t *e) {
     restartBleAdvertising();
   });
   makeBtn(bleCard, "SYNC PHONE", 136, 66, 114, 38, [](lv_event_t *e) {
     sendBlePacket("CMD:SYNC:REQ");
-    triggerAlert(bleConnected ? "SYNC REQUESTED" : "WAITING FOR APP", bleConnected ? T().green : T().amber, 2200);
-  }, nullptr, T().cyan, 0x06090F);
+    triggerAlert(bleConnected ? "SYNC REQUESTED" : "WAITING FOR APP", bleConnected ? pal().green : pal().amber, 2200);
+  }, nullptr, pal().cyan, 0x06090F);
   makeBtn(bleCard, "PING PHONE", 256, 66, 110, 38, [](lv_event_t *e) {
     sendBlePacket("CMD:PHONE:PING");
     triggerAlert("PING PACKET SENT", VISTEON_ORANGE, 2200);
   });
 
-  lv_obj_t *termBox = makeCard(bleCard, 16, 114, 350, 234, T().surfaceDeep, 10);
+  lv_obj_t *termBox = makeCard(bleCard, 16, 114, 350, 234, pal().surfaceDeep, 10);
   lv_obj_add_flag(termBox, LV_OBJ_FLAG_SCROLLABLE);
-  conBleLogLbl = makeLabel(termBox, "", FONT_XS, T().text, 10, 8, 326);
+  conBleLogLbl = makeLabel(termBox, "", FONT_XS, pal().text, 10, 8, 326);
   lv_label_set_long_mode(conBleLogLbl, LV_LABEL_LONG_WRAP);
 }
 
@@ -1932,8 +1928,9 @@ static void buildPageConnect() {
 // -----------------------------------------------------------------------------
 static void buildPageSystem() {
   lv_obj_t *chartCard = makeCard(pageContainer, 12, 6, 434, 230);
-  makeLabel(chartCard, "REAL-TIME TELEMETRY  (ORANGE: SPEED  |  GREEN: POWER)", FONT_XS, T().muted, 16, 10);
+  makeLabel(chartCard, "REAL-TIME TELEMETRY  (ORANGE: SPEED  |  GREEN: POWER)", FONT_XS, pal().muted, 16, 10);
 
+#if LV_USE_CHART
   sysChart = lv_chart_create(chartCard);
   lv_obj_set_pos(sysChart, 14, 34);
   lv_obj_set_size(sysChart, 406, 184);
@@ -1941,31 +1938,34 @@ static void buildPageSystem() {
   lv_chart_set_point_count(sysChart, 36);
   lv_chart_set_range(sysChart, LV_CHART_AXIS_PRIMARY_Y, 0, 200);
   lv_chart_set_div_line_count(sysChart, 4, 6);
-  lv_obj_set_style_bg_color(sysChart, lv_color_hex(T().surfaceDeep), 0);
-  lv_obj_set_style_border_color(sysChart, lv_color_hex(T().border), 0);
+  lv_obj_set_style_bg_color(sysChart, lv_color_hex(pal().surfaceDeep), 0);
+  lv_obj_set_style_border_color(sysChart, lv_color_hex(pal().border), 0);
   lv_obj_set_style_line_width(sysChart, 2, LV_PART_ITEMS);
   lv_obj_set_style_size(sysChart, 0, LV_PART_INDICATOR);
 
   serSpeed = lv_chart_add_series(sysChart, lv_color_hex(VISTEON_ORANGE), LV_CHART_AXIS_PRIMARY_Y);
-  serPower = lv_chart_add_series(sysChart, lv_color_hex(T().green), LV_CHART_AXIS_PRIMARY_Y);
+  serPower = lv_chart_add_series(sysChart, lv_color_hex(pal().green), LV_CHART_AXIS_PRIMARY_Y);
   for (int i = 0; i < 36; ++i) {
     lv_chart_set_next_value(sysChart, serSpeed, (lv_coord_t)vs.speedKmh);
     lv_chart_set_next_value(sysChart, serPower, (lv_coord_t)(vs.powerKw + 60));
   }
+#else
+  makeLabel(chartCard, "Enable LV_USE_CHART in lv_conf.h for live graph.", FONT_SM, pal().muted, 20, 100);
+#endif
 
   lv_obj_t *hwCard = makeCard(pageContainer, 12, 244, 434, 124);
-  makeLabel(hwCard, "ESP32-S3 HARDWARE DIAGNOSTICS", FONT_XS, T().cyan, 16, 12);
+  makeLabel(hwCard, "ESP32-S3 HARDWARE DIAGNOSTICS", FONT_XS, pal().cyan, 16, 12);
   sysMemLbl = makeLabel(hwCard, "CPU: 240 MHz Dual-Core LX7  |  ST7262 800x480\nHeap: -- KB  |  OPI PSRAM: -- KB\nUptime: -- s",
-                        FONT_SM, T().text, 16, 36);
+                        FONT_SM, pal().text, 16, 36);
 
   lv_obj_t *setCard = makeCard(pageContainer, 456, 6, 332, 362);
-  makeLabel(setCard, "CLUSTER SETTINGS & DEMO TOOLS", FONT_XS, T().muted, 16, 12);
+  makeLabel(setCard, "CLUSTER SETTINGS & DEMO TOOLS", FONT_XS, pal().muted, 16, 12);
 
   lv_obj_t *uBtn = makeBtn(setCard, vs.useMph ? "UNITS: MPH (IMPERIAL)" : "UNITS: KM/H (METRIC)",
                            16, 40, 300, 42, [](lv_event_t *e) {
     vs.useMph = !vs.useMph;
     if (sysUnitBtnLbl) lv_label_set_text(sysUnitBtnLbl, vs.useMph ? "UNITS: MPH (IMPERIAL)" : "UNITS: KM/H (METRIC)");
-    triggerAlert(vs.useMph ? "SWITCHED TO MPH" : "SWITCHED TO KM/H", T().cyan, 2000);
+    triggerAlert(vs.useMph ? "SWITCHED TO MPH" : "SWITCHED TO KM/H", pal().cyan, 2000);
   });
   sysUnitBtnLbl = lv_obj_get_child(uBtn, 0);
 
@@ -1979,9 +1979,9 @@ static void buildPageSystem() {
     showBootSplash();
   }, nullptr, VISTEON_ORANGE, 0x06090F);
 
-  makeLabel(setCard, "GT911 CAPACITIVE TOUCH TEST PAD", FONT_XS, T().green, 16, 198);
-  lv_obj_t *pad = makeCard(setCard, 16, 218, 300, 128, T().surfaceDeep, 12);
-  sysTouchLbl = makeLabel(pad, "Touch screen to verify GT911 (X, Y)", FONT_XS, T().muted, 12, 10);
+  makeLabel(setCard, "GT911 CAPACITIVE TOUCH TEST PAD", FONT_XS, pal().green, 16, 198);
+  lv_obj_t *pad = makeCard(setCard, 16, 218, 300, 128, pal().surfaceDeep, 12);
+  sysTouchLbl = makeLabel(pad, "Touch screen to verify GT911 (X, Y)", FONT_XS, pal().muted, 12, 10);
 
   sysTouchDot = lv_obj_create(pad);
   lv_obj_set_size(sysTouchDot, 16, 16);
@@ -2003,9 +2003,9 @@ static void selectPage(PageId page) {
   for (int i = 0; i < PAGE_COUNT; ++i) {
     if (!dockBtns[i]) continue;
     bool active = (i == (int)page);
-    lv_obj_set_style_bg_color(dockBtns[i], lv_color_hex(active ? T().surfaceAlt : T().surface), 0);
+    lv_obj_set_style_bg_color(dockBtns[i], lv_color_hex(active ? pal().surfaceAlt : pal().surface), 0);
     lv_obj_set_style_text_color(lv_obj_get_child(dockBtns[i], 0),
-                                lv_color_hex(active ? VISTEON_ORANGE : T().muted), 0);
+                                lv_color_hex(active ? VISTEON_ORANGE : pal().muted), 0);
     if (dockIndicators[i]) {
       lv_obj_set_style_bg_opa(dockIndicators[i], active ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     }
@@ -2026,20 +2026,18 @@ static void buildShell() {
   lv_obj_t *scr = lv_scr_act();
   lv_obj_clean(scr);
   lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_style_bg_color(scr, lv_color_hex(T().bg), 0);
+  lv_obj_set_style_bg_color(scr, lv_color_hex(pal().bg), 0);
   lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
   lv_obj_set_style_pad_all(scr, 0, 0);
 
-  // === PERSISTENT TOP BAR (800 x 46) ===
   topBar = lv_obj_create(scr);
   lv_obj_set_pos(topBar, 0, 0);
   lv_obj_set_size(topBar, 800, 46);
   lv_obj_clear_flag(topBar, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_style_bg_color(topBar, lv_color_hex(T().bg), 0);
+  lv_obj_set_style_bg_color(topBar, lv_color_hex(pal().bg), 0);
   lv_obj_set_style_border_width(topBar, 0, 0);
   lv_obj_set_style_pad_all(topBar, 0, 0);
 
-  // Top-Left Exact Vector Visteon V Logo (tap replays boot animation)
   lv_obj_t *logoHit = lv_obj_create(topBar);
   lv_obj_remove_style_all(logoHit);
   lv_obj_set_pos(logoHit, 14, 10);
@@ -2048,38 +2046,33 @@ static void buildShell() {
   lv_obj_add_event_cb(logoHit, drawVisteonLogoCb, LV_EVENT_DRAW_MAIN, nullptr);
   lv_obj_add_event_cb(logoHit, [](lv_event_t *e) { showBootSplash(); }, LV_EVENT_CLICKED, nullptr);
 
-  makeLabel(topBar, "VISTEON", FONT_MD, T().text, 52, 13);
+  makeLabel(topBar, "VISTEON", FONT_MD, pal().text, 52, 13);
   makeLabel(topBar, "LUNET", FONT_XS, VISTEON_ORANGE, 128, 16);
 
-  // Center Dynamic Status / Alert / Overspeed Pill
-  dynamicPill = makeCard(topBar, 200, 6, 396, 34, T().surface, 17);
+  dynamicPill = makeCard(topBar, 200, 6, 396, 34, pal().surface, 17);
   dynamicPillLabel = lv_label_create(dynamicPill);
   lv_label_set_text(dynamicPillLabel, "12:00 PM   |   Sat, 21 Nov   |   27C Clear");
   lv_obj_set_style_text_font(dynamicPillLabel, FONT_SM, 0);
-  lv_obj_set_style_text_color(dynamicPillLabel, lv_color_hex(T().text), 0);
+  lv_obj_set_style_text_color(dynamicPillLabel, lv_color_hex(pal().text), 0);
   lv_obj_center(dynamicPillLabel);
 
-  // Right System Status Icons (Direct Supply = 100%)
-  topWifiIcon    = makeLabel(topBar, LV_SYMBOL_WIFI, FONT_SM, T().muted, 610, 15);
-  topBleIcon     = makeLabel(topBar, LV_SYMBOL_BLUETOOTH, FONT_SM, T().cyan, 636, 15);
-  topSupplyLabel = makeLabel(topBar, LV_SYMBOL_CHARGE " 100%", FONT_XS, T().green, 658, 16);
+  topWifiIcon    = makeLabel(topBar, LV_SYMBOL_WIFI, FONT_SM, pal().muted, 610, 15);
+  topBleIcon     = makeLabel(topBar, LV_SYMBOL_BLUETOOTH, FONT_SM, pal().cyan, 636, 15);
+  topSupplyLabel = makeLabel(topBar, LV_SYMBOL_CHARGE " 100%", FONT_XS, pal().green, 658, 16);
 
-  // Icon-Only Sun / Crescent Moon Theme Button (Zero Text)
   lv_obj_t *themeIconBtn = makeBtn(topBar, "", 744, 7, 42, 32, [](lv_event_t *e) {
     lightTheme = !lightTheme;
     buildShell();
-  }, nullptr, T().surfaceAlt, T().text, 16);
+  }, nullptr, pal().surfaceAlt, pal().text, 16);
   lv_obj_add_event_cb(themeIconBtn, drawThemeIconCb, LV_EVENT_DRAW_MAIN_END, nullptr);
 
-  // === ACTIVE PAGE CONTAINER (800 x 376) ===
   pageContainer = lv_obj_create(scr);
   lv_obj_remove_style_all(pageContainer);
   lv_obj_set_pos(pageContainer, 0, 46);
   lv_obj_set_size(pageContainer, 800, 376);
   lv_obj_clear_flag(pageContainer, LV_OBJ_FLAG_SCROLLABLE);
 
-  // === PERSISTENT FLOATING BOTTOM DOCK ===
-  lv_obj_t *dock = makeCard(scr, 44, 424, 712, 50, T().surface, 18);
+  lv_obj_t *dock = makeCard(scr, 44, 424, 712, 50, pal().surface, 18);
   const char *dockNames[PAGE_COUNT] = {
     LV_SYMBOL_HOME " DRIVE",
     LV_SYMBOL_GPS " NAV",
@@ -2094,7 +2087,7 @@ static void buildShell() {
     dockBtns[i] = makeBtn(dock, dockNames[i], bx, 5, 112, 40,
       [](lv_event_t *e) {
         selectPage((PageId)(uintptr_t)lv_event_get_user_data(e));
-      }, (void *)(uintptr_t)i, T().surface, T().muted, 12);
+      }, (void *)(uintptr_t)i, pal().surface, pal().muted, 12);
     lv_obj_set_style_border_width(dockBtns[i], 0, 0);
 
     dockIndicators[i] = lv_obj_create(dockBtns[i]);
@@ -2174,7 +2167,7 @@ class LunetCharCallbacks : public BLECharacteristicCallbacks {
 static void sendBlePacket(const char *packet) {
   appendBleLog("TX", packet);
   if (!bleCharacteristic) return;
-  bleCharacteristic->setValue(packet);
+  bleCharacteristic->setValue(String(packet));
   if (bleConnected) {
     bleCharacteristic->notify();
     Serial.printf("[BLE TX] %s\n", packet);
@@ -2249,18 +2242,18 @@ static void processBleCommand(const char *command) {
     strncpy(vs.weatherStr, cmd.substring(8).c_str(), sizeof(vs.weatherStr) - 1);
     vs.weatherStr[sizeof(vs.weatherStr) - 1] = '\0';
   } else if (cmd.startsWith("PBATT:")) {
-    vs.phoneBattery = constrain(cmd.substring(6).toInt(), 0, 100);
+    vs.phoneBattery = clampInt((int)cmd.substring(6).toInt(), 0, 100);
   } else if (cmd.startsWith("BATTERY:")) {
-    vs.phoneBattery = constrain(cmd.substring(8).toInt(), 0, 100);
+    vs.phoneBattery = clampInt((int)cmd.substring(8).toInt(), 0, 100);
   } else if (cmd.startsWith("SPEED:")) {
     vs.demoDrive = false;
-    float spd = constrain(cmd.substring(6).toFloat(), 0.0f, 220.0f);
+    float spd = clampFloat(cmd.substring(6).toFloat(), 0.0f, 220.0f);
     if (spd > 0.0f && vs.gear == 'P') vs.gear = 'D';
     vs.targetSpeedKmh = spd;
-    if (drvThrottleSld) lv_slider_set_value(drvThrottleSld, (int)constrain(spd, 0.0f, 200.0f), LV_ANIM_OFF);
+    if (drvThrottleSld) lv_slider_set_value(drvThrottleSld, clampInt((int)spd, 0, 200), LV_ANIM_OFF);
     refreshDriveStyles();
   } else if (cmd.startsWith("LIMIT:")) {
-    vs.speedLimitKmh = constrain(cmd.substring(6).toInt(), 20, 200);
+    vs.speedLimitKmh = clampInt((int)cmd.substring(6).toInt(), 20, 200);
     if (drvSpeedLimitLbl) lv_label_set_text_fmt(drvSpeedLimitLbl, "%d", displayLimit());
   } else if (cmd.startsWith("GEAR:")) {
     String g = cmd.substring(5);
@@ -2280,9 +2273,8 @@ static void processBleCommand(const char *command) {
     else vs.mode = MODE_COMFORT;
     refreshDriveStyles();
   } else if (cmd.startsWith("SOC:")) {
-    vs.socPercent = constrain(cmd.substring(4).toFloat(), 0.0f, 100.0f);
+    vs.socPercent = clampFloat(cmd.substring(4).toFloat(), 0.0f, 100.0f);
   } else if (cmd.startsWith("NOTIF:")) {
-    // Format: NOTIF:<appName>|<message>  OR  NOTIF:<message>
     String payload = cmd.substring(6);
     String parts[2];
     int n = splitPipes(payload, parts, 2);
@@ -2292,9 +2284,8 @@ static void processBleCommand(const char *command) {
       strncpy(vs.notifText, payload.c_str(), sizeof(vs.notifText) - 1);
       vs.notifText[sizeof(vs.notifText) - 1] = '\0';
     }
-    triggerAlert(vs.notifText, T().amber, 4500);
+    triggerAlert(vs.notifText, pal().amber, 4500);
   } else if (cmd.startsWith("CALL:")) {
-    // Format: CALL:INCOMING|<name> | CALL:ACTIVE|<name> | CALL:ENDED
     String payload = cmd.substring(5);
     String parts[2];
     int n = splitPipes(payload, parts, 2);
@@ -2302,28 +2293,32 @@ static void processBleCommand(const char *command) {
       vs.callActive = true;
       vs.callAnswered = false;
       strncpy(vs.callerName, (n == 2 && parts[1].length() > 0) ? parts[1].c_str() : "Unknown Caller", sizeof(vs.callerName) - 1);
+      vs.callerName[sizeof(vs.callerName) - 1] = '\0';
       char alert[64];
       snprintf(alert, sizeof(alert), "INCOMING CALL: %s", vs.callerName);
-      triggerAlert(alert, T().green, 8000);
+      triggerAlert(alert, pal().green, 8000);
     } else if (parts[0].equalsIgnoreCase("ACTIVE")) {
       vs.callActive = true;
       vs.callAnswered = true;
-      if (n == 2 && parts[1].length() > 0) strncpy(vs.callerName, parts[1].c_str(), sizeof(vs.callerName) - 1);
-      triggerAlert("CALL CONNECTED", T().green, 2500);
+      if (n == 2 && parts[1].length() > 0) {
+        strncpy(vs.callerName, parts[1].c_str(), sizeof(vs.callerName) - 1);
+        vs.callerName[sizeof(vs.callerName) - 1] = '\0';
+      }
+      triggerAlert("CALL CONNECTED", pal().green, 2500);
     } else if (parts[0].equalsIgnoreCase("ENDED")) {
       vs.callActive = false;
       vs.callAnswered = false;
       strncpy(vs.callerName, "No Active Call", sizeof(vs.callerName) - 1);
-      triggerAlert("CALL ENDED", T().muted, 2000);
+      vs.callerName[sizeof(vs.callerName) - 1] = '\0';
+      triggerAlert("CALL ENDED", pal().muted, 2000);
     } else {
-      // Legacy fallback: CALL:<name>
       vs.callActive = true;
       vs.callAnswered = false;
       strncpy(vs.callerName, payload.c_str(), sizeof(vs.callerName) - 1);
-      triggerAlert("INCOMING CALL", T().green, 6000);
+      vs.callerName[sizeof(vs.callerName) - 1] = '\0';
+      triggerAlert("INCOMING CALL", pal().green, 6000);
     }
   } else if (cmd.startsWith("MEDIA:")) {
-    // Format: MEDIA:<title>|<artist>|<PLAY|PAUSE>|<progress_0_100>|<vol_0_100>
     String parts[5];
     int n = splitPipes(cmd.substring(6), parts, 5);
     if (n >= 1 && parts[0].length() > 0) {
@@ -2338,16 +2333,15 @@ static void processBleCommand(const char *command) {
       vs.mediaPlaying = parts[2].equalsIgnoreCase("PLAY");
     }
     if (n >= 4) {
-      vs.mediaProgress = constrain(parts[3].toInt(), 0, 100);
+      vs.mediaProgress = clampInt((int)parts[3].toInt(), 0, 100);
     }
     if (n >= 5) {
-      vs.mediaVolume = constrain(parts[4].toInt(), 0, 100);
+      vs.mediaVolume = clampInt((int)parts[4].toInt(), 0, 100);
       if (medVolSlider) lv_slider_set_value(medVolSlider, vs.mediaVolume, LV_ANIM_OFF);
     }
     if (drvMediaPlayLbl) lv_label_set_text(drvMediaPlayLbl, vs.mediaPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
     if (medPlayBtnLbl)   lv_label_set_text(medPlayBtnLbl, vs.mediaPlaying ? LV_SYMBOL_PAUSE "  PAUSE" : LV_SYMBOL_PLAY "  PLAY");
   } else if (cmd.startsWith("NAV:")) {
-    // Format: NAV:<STRAIGHT|LEFT|RIGHT|UTURN>|<distM>|<street>|<etaMin>|<remKm>
     String payload = cmd.substring(4);
     String parts[5];
     int n = splitPipes(payload, parts, 5);
@@ -2357,11 +2351,11 @@ static void processBleCommand(const char *command) {
       else if (parts[0].equalsIgnoreCase("UTURN")) vs.navDir = NAV_UTURN;
       else                                         vs.navDir = NAV_STRAIGHT;
 
-      vs.navDistM = max(0, parts[1].toInt());
+      vs.navDistM = clampInt((int)parts[1].toInt(), 0, 999999);
       strncpy(vs.navStreet, parts[2].c_str(), sizeof(vs.navStreet) - 1);
       vs.navStreet[sizeof(vs.navStreet) - 1] = '\0';
-      if (n >= 4) vs.navEtaMin = max(0, parts[3].toInt());
-      if (n >= 5) vs.navRemKm  = max(0.0f, parts[4].toFloat());
+      if (n >= 4) vs.navEtaMin = clampInt((int)parts[3].toInt(), 0, 9999);
+      if (n >= 5) vs.navRemKm  = clampFloat(parts[4].toFloat(), 0.0f, 9999.0f);
     } else {
       strncpy(vs.navStreet, payload.c_str(), sizeof(vs.navStreet) - 1);
       vs.navStreet[sizeof(vs.navStreet) - 1] = '\0';
@@ -2382,7 +2376,8 @@ static void startWifiConnection(const char *ssid, const char *password) {
   delay(40);
   WiFi.begin(ssid, password ? password : "");
   strncpy(activeWifiName, ssid, sizeof(activeWifiName) - 1);
-  triggerAlert("CONNECTING WI-FI...", T().cyan, 3000);
+  activeWifiName[sizeof(activeWifiName) - 1] = '\0';
+  triggerAlert("CONNECTING WI-FI...", pal().cyan, 3000);
 }
 
 static void scanWifiNetworks() {
@@ -2392,7 +2387,7 @@ static void scanWifiNetworks() {
   wifiScanInProgress = true;
   if (conWifiList) {
     lv_obj_clean(conWifiList);
-    makeLabel(conWifiList, "Scanning 2.4 GHz networks...", FONT_XS, T().cyan, 8, 8);
+    makeLabel(conWifiList, "Scanning 2.4 GHz networks...", FONT_XS, pal().cyan, 8, 8);
   }
 }
 
@@ -2407,7 +2402,7 @@ static void updateWifiScanResults() {
     WiFi.scanDelete();
     if (conWifiList) {
       lv_obj_clean(conWifiList);
-      makeLabel(conWifiList, "No 2.4 GHz networks found.", FONT_XS, T().amber, 8, 8);
+      makeLabel(conWifiList, "No 2.4 GHz networks found.", FONT_XS, pal().amber, 8, 8);
     }
     return;
   }
@@ -2436,7 +2431,7 @@ static void updateWifiScanResults() {
         if (idx >= scannedWifiCount) return;
         if (scannedWifi[idx].open) startWifiConnection(scannedWifi[idx].ssid, "");
         else openWifiPasswordModal(scannedWifi[idx].ssid);
-      }, (void *)(uintptr_t)i, T().surfaceAlt, T().text, 8);
+      }, (void *)(uintptr_t)i, pal().surfaceAlt, pal().text, 8);
     lv_obj_align(lv_obj_get_child(row, 0), LV_ALIGN_LEFT_MID, 10, 0);
   }
 }
@@ -2445,11 +2440,9 @@ static void updateWifiScanResults() {
 // 30 Hz Physics, Overspeed Red Flash & Reactive In-Place UI Updates
 // -----------------------------------------------------------------------------
 static void stepPhysicsAndAnimations(uint32_t now) {
-  // 1. Boot Splash Progress (2.2s)
   if (bootActive) {
     uint32_t el = now - bootStartMs;
-    int pct = (int)(el * 100 / 2100);
-    if (pct > 100) pct = 100;
+    int pct = clampInt((int)(el * 100 / 2100), 0, 100);
     if (bootBar) lv_bar_set_value(bootBar, pct, LV_ANIM_OFF);
     if (el >= 2200) {
       bootActive = false;
@@ -2457,29 +2450,26 @@ static void stepPhysicsAndAnimations(uint32_t now) {
     }
   }
 
-  // 2. Blinker Pulse (450ms)
   if (now - lastBlinkMs >= 450) {
     lastBlinkMs = now;
     blinkState = !blinkState;
   }
 
-  // 3. Auto-Drive Demo Scenario (Only when manually toggled ON)
   float dt = 0.033f;
   if (vs.demoDrive && vs.gear == 'D') {
     float t = now * 0.001f;
     float base = (vs.mode == MODE_SPORT) ? 112.0f : ((vs.mode == MODE_COMFORT) ? 74.0f : 52.0f);
     float wave = 26.0f * sinf(t * 0.28f) + 12.0f * cosf(t * 0.65f);
-    vs.targetSpeedKmh = constrain(base + wave, 18.0f, 185.0f);
+    vs.targetSpeedKmh = clampFloat(base + wave, 18.0f, 185.0f);
     vs.leadDistM = 36.0f + 16.0f * sinf(t * 0.42f + 1.0f);
   } else if (vs.gear == 'P' || vs.gear == 'N') {
     vs.targetSpeedKmh = 0.0f;
   }
 
-  // Smooth Speed & Power/Regen Physics
   float diff = vs.targetSpeedKmh - vs.speedKmh;
   float accelRate = (vs.mode == MODE_SPORT) ? 2.6f : ((vs.mode == MODE_COMFORT) ? 1.8f : 1.2f);
   if (fabsf(diff) > 0.3f) {
-    vs.speedKmh += constrain(diff * 0.09f, -2.6f, accelRate);
+    vs.speedKmh += clampFloat(diff * 0.09f, -2.6f, accelRate);
   } else {
     vs.speedKmh = vs.targetSpeedKmh;
   }
@@ -2490,7 +2480,7 @@ static void stepPhysicsAndAnimations(uint32_t now) {
     targetPower = (diff > 1.0f) ? (vs.speedKmh * 0.6f + diff * 2.2f)
                                 : (vs.braking ? (-25.0f - (vs.regenLevel * 12.0f)) : (vs.speedKmh * 0.14f));
   }
-  targetPower = constrain(targetPower, -60.0f, 180.0f);
+  targetPower = clampFloat(targetPower, -60.0f, 180.0f);
   vs.powerKw += (targetPower - vs.powerKw) * 0.16f;
   if (vs.gear == 'P' && fabsf(vs.powerKw) < 0.4f) vs.powerKw = 0.0f;
 
@@ -2499,7 +2489,7 @@ static void stepPhysicsAndAnimations(uint32_t now) {
   if (overspeedOverlay) {
     if (isOverspeed && !bootActive && !kbModal) {
       lv_obj_clear_flag(overspeedOverlay, LV_OBJ_FLAG_HIDDEN);
-      float pulse = 0.5f + 0.5f * sinf(now * 0.014f); // Crisp ~2.2 Hz warning pulse
+      float pulse = 0.5f + 0.5f * sinf(now * 0.014f);
       lv_opa_t borderOpa = (lv_opa_t)(90 + (int)(pulse * 165.0f));
       lv_opa_t tintOpa   = (lv_opa_t)(8 + (int)(pulse * 34.0f));
       lv_obj_set_style_border_opa(overspeedOverlay, borderOpa, 0);
@@ -2509,7 +2499,6 @@ static void stepPhysicsAndAnimations(uint32_t now) {
     }
   }
 
-  // Road Perspective Scroll & Trip Integration
   if (vs.speedKmh > 0.5f) {
     vs.roadPhase = fmodf(vs.roadPhase + (vs.speedKmh * 0.00055f), 1.0f);
     float dKm = (vs.speedKmh / 3600.0f) * dt;
@@ -2517,7 +2506,6 @@ static void stepPhysicsAndAnimations(uint32_t now) {
     vs.odoKm  += dKm;
   }
 
-  // Demo Nav Distance Countdown when driving without live phone Nav push
   if (vs.demoDrive && vs.speedKmh > 5.0f) {
     static float navAccumM = 0.0f;
     navAccumM += (vs.speedKmh / 3.6f) * dt;
@@ -2534,7 +2522,6 @@ static void stepPhysicsAndAnimations(uint32_t now) {
     }
   }
 
-  // Media Visualizer & Vinyl Spin
   if (vs.mediaPlaying) {
     vs.vinylAngle = fmodf(vs.vinylAngle + 3.2f, 360.0f);
     for (int i = 0; i < 12; ++i) {
@@ -2545,7 +2532,6 @@ static void stepPhysicsAndAnimations(uint32_t now) {
     for (int i = 0; i < 12; ++i) vs.eqBars[i] += (8.0f - vs.eqBars[i]) * 0.15f;
   }
 
-  // === FAST IN-PLACE REDRAWS (30 Hz) ===
   if (currentPage == PAGE_DRIVE) {
     if (drvSpeedArc) {
       lv_arc_set_value(drvSpeedArc, (int)vs.speedKmh);
@@ -2554,16 +2540,16 @@ static void stepPhysicsAndAnimations(uint32_t now) {
     }
     if (drvPowerArc) {
       lv_arc_set_value(drvPowerArc, (int)vs.powerKw);
-      lv_obj_set_style_arc_color(drvPowerArc, lv_color_hex(vs.powerKw < 0 ? T().green : VISTEON_ORANGE), LV_PART_INDICATOR);
+      lv_obj_set_style_arc_color(drvPowerArc, lv_color_hex(vs.powerKw < 0 ? pal().green : VISTEON_ORANGE), LV_PART_INDICATOR);
     }
     if (drvSpeedVal) {
       lv_label_set_text_fmt(drvSpeedVal, "%d", displaySpeed());
-      lv_obj_set_style_text_color(drvSpeedVal, lv_color_hex(isOverspeed ? T().red : T().text), 0);
+      lv_obj_set_style_text_color(drvSpeedVal, lv_color_hex(isOverspeed ? pal().red : pal().text), 0);
     }
     if (drvPowerVal) {
       int pInt = (int)lroundf(vs.powerKw);
       lv_label_set_text_fmt(drvPowerVal, "%s%d kW", (pInt > 0 ? "+" : ""), pInt);
-      lv_obj_set_style_text_color(drvPowerVal, lv_color_hex(pInt < 0 ? T().green : T().muted), 0);
+      lv_obj_set_style_text_color(drvPowerVal, lv_color_hex(pInt < 0 ? pal().green : pal().muted), 0);
     }
     if (drvSpeedLimitBox) {
       lv_obj_set_style_bg_color(drvSpeedLimitBox, lv_color_hex((isOverspeed && blinkState) ? 0xEF4444 : 0xFFFFFF), 0);
@@ -2581,11 +2567,10 @@ static void stepPhysicsAndAnimations(uint32_t now) {
 static void updateSlowUi(uint32_t now) {
   const bool wifiOk = (WiFi.status() == WL_CONNECTED);
 
-  // Automatic IST NTP Time Sync when Wi-Fi connects
   if (wifiOk && !ntpConfigured) {
     configTime(19800, 0, "pool.ntp.org", "time.nist.gov");
     ntpConfigured = true;
-    triggerAlert("WI-FI CONNECTED  |  TIME SYNCED", T().green, 3000);
+    triggerAlert("WI-FI CONNECTED  |  TIME SYNCED", pal().green, 3000);
   }
   if (ntpConfigured && !bleTimeOverride) {
     struct tm ti;
@@ -2595,12 +2580,10 @@ static void updateSlowUi(uint32_t now) {
     }
   }
 
-  // Persistent Top Bar Icons (Top Bar Supply stays 100%)
-  if (topWifiIcon)    lv_obj_set_style_text_color(topWifiIcon, lv_color_hex(wifiOk ? T().green : T().muted), 0);
-  if (topBleIcon)     lv_obj_set_style_text_color(topBleIcon, lv_color_hex(bleConnected ? T().green : T().cyan), 0);
+  if (topWifiIcon)    lv_obj_set_style_text_color(topWifiIcon, lv_color_hex(wifiOk ? pal().green : pal().muted), 0);
+  if (topBleIcon)     lv_obj_set_style_text_color(topBleIcon, lv_color_hex(bleConnected ? pal().green : pal().cyan), 0);
   if (topSupplyLabel) lv_label_set_text_fmt(topSupplyLabel, LV_SYMBOL_CHARGE " %d%%", vs.supplyBattery);
 
-  // Dynamic Status / Alert / Overspeed Pill
   if (dynamicPill && dynamicPillLabel) {
     if (isOverspeed) {
       lv_obj_set_style_bg_color(dynamicPill, lv_color_hex(blinkState ? 0xEF4444 : 0x991B1B), 0);
@@ -2614,22 +2597,20 @@ static void updateSlowUi(uint32_t now) {
       lv_obj_set_style_text_color(dynamicPillLabel, lv_color_hex(0x06090F), 0);
       lv_label_set_text(dynamicPillLabel, vs.alertText);
     } else {
-      lv_obj_set_style_bg_color(dynamicPill, lv_color_hex(T().surface), 0);
-      lv_obj_set_style_text_color(dynamicPillLabel, lv_color_hex(T().text), 0);
+      lv_obj_set_style_bg_color(dynamicPill, lv_color_hex(pal().surface), 0);
+      lv_obj_set_style_text_color(dynamicPillLabel, lv_color_hex(pal().text), 0);
       char pillBuf[84];
       snprintf(pillBuf, sizeof(pillBuf), "%s   |   %s   |   %s", vs.timeStr, vs.dateStr, vs.weatherStr);
       lv_label_set_text(dynamicPillLabel, pillBuf);
     }
   }
 
-  // Gentle media bar tick when playing without continuous seek packets
   static uint32_t lastProgSec = 0;
   if (vs.mediaPlaying && now - lastProgSec >= 2000) {
     lastProgSec = now;
     vs.mediaProgress = (vs.mediaProgress + 1) % 101;
   }
 
-  // Active Page Slow Refreshes
   if (currentPage == PAGE_DRIVE) {
     if (drvAdasFooter) {
       if (vs.gear == 'P') {
@@ -2682,7 +2663,7 @@ static void updateSlowUi(uint32_t now) {
     if (navCallStatusLbl) {
       const char *st = vs.callActive ? (vs.callAnswered ? "CALL IN PROGRESS" : "INCOMING CALL...") : "HANDS-FREE CALL CONTROL";
       lv_label_set_text(navCallStatusLbl, st);
-      lv_obj_set_style_text_color(navCallStatusLbl, lv_color_hex(vs.callActive ? T().green : T().cyan), 0);
+      lv_obj_set_style_text_color(navCallStatusLbl, lv_color_hex(vs.callActive ? pal().green : pal().cyan), 0);
     }
     if (navCallerLbl) lv_label_set_text(navCallerLbl, vs.callActive ? vs.callerName : "Ready for Phone Calls");
     if (navPhoneBattLbl) {
@@ -2715,7 +2696,7 @@ static void updateSlowUi(uint32_t now) {
   } else if (currentPage == PAGE_CONNECT) {
     if (conWifiStatusLbl) {
       lv_label_set_text(conWifiStatusLbl, wifiOk ? LV_SYMBOL_WIFI "  WI-FI CONNECTED" : LV_SYMBOL_WIFI "  WI-FI DISCONNECTED");
-      lv_obj_set_style_text_color(conWifiStatusLbl, lv_color_hex(wifiOk ? T().green : T().amber), 0);
+      lv_obj_set_style_text_color(conWifiStatusLbl, lv_color_hex(wifiOk ? pal().green : pal().amber), 0);
     }
     if (conWifiDetailLbl) {
       if (wifiOk) {
@@ -2727,7 +2708,7 @@ static void updateSlowUi(uint32_t now) {
     }
     if (conBleStatusLbl) {
       lv_label_set_text(conBleStatusLbl, bleConnected ? LV_SYMBOL_BLUETOOTH "  PHONE CONNECTED" : LV_SYMBOL_BLUETOOTH "  ADVERTISING: Visteon-Lunet");
-      lv_obj_set_style_text_color(conBleStatusLbl, lv_color_hex(bleConnected ? T().green : T().cyan), 0);
+      lv_obj_set_style_text_color(conBleStatusLbl, lv_color_hex(bleConnected ? pal().green : pal().cyan), 0);
     }
     if (conBlePhoneLbl) {
       if (vs.phoneBattery >= 0) lv_label_set_text_fmt(conBlePhoneLbl, "MTU 247  |  Phone Batt: %d%%", vs.phoneBattery);
@@ -2751,8 +2732,8 @@ static void updateSlowUi(uint32_t now) {
     }
     if (sysTouchLbl && sysTouchDot) {
       lv_label_set_text_fmt(sysTouchLbl, "Last Touch: X=%d, Y=%d", vs.lastTouchX, vs.lastTouchY);
-      int dx = map(vs.lastTouchX, 0, 800, 10, 274);
-      int dy = map(vs.lastTouchY, 0, 480, 28, 106);
+      int dx = clampInt(10 + (vs.lastTouchX * 264) / 800, 10, 274);
+      int dy = clampInt(28 + (vs.lastTouchY * 78) / 480, 28, 106);
       lv_obj_set_pos(sysTouchDot, dx, dy);
     }
   }
@@ -2791,19 +2772,16 @@ void loop() {
   const uint32_t now = millis();
   lv_timer_handler();
 
-  // Drain all queued BLE RX packets safely on Core 1
   char rxBuf[BLE_MSG_MAX];
   while (dequeueBleRx(rxBuf, sizeof(rxBuf))) {
     processBleCommand(rxBuf);
   }
 
-  // Request full initial sync ~650ms after companion app connects
   if (bleSyncReqPending && bleConnected && (now - bleConnectedAt >= 650)) {
     bleSyncReqPending = false;
     sendBlePacket("CMD:SYNC:REQ");
   }
 
-  // Non-blocking BLE advertising auto-recovery after disconnect
   if (bleRestartPending && !bleConnected && (now - bleDisconnectAt >= 800)) {
     BLEDevice::startAdvertising();
     bleRestartPending = false;
@@ -2812,24 +2790,23 @@ void loop() {
 
   updateWifiScanResults();
 
-  // 30 Hz Physics, Overspeed Flash & Vector ADAS Animations
   if (now - lastPhysicsMs >= 33) {
     lastPhysicsMs = now;
     stepPhysicsAndAnimations(now);
   }
 
-  // 4 Hz Status Bar, Telemetry & Text Refreshes
   if (now - lastSlowUiMs >= 250) {
     lastSlowUiMs = now;
     updateSlowUi(now);
   }
 
-  // 2 Hz Telemetry Chart Feed (on System page)
+#if LV_USE_CHART
   if (currentPage == PAGE_SYSTEM && sysChart && (now - lastChartMs >= 500)) {
     lastChartMs = now;
     lv_chart_set_next_value(sysChart, serSpeed, (lv_coord_t)vs.speedKmh);
     lv_chart_set_next_value(sysChart, serPower, (lv_coord_t)(vs.powerKw + 60));
   }
+#endif
 
   delay(5);
 }

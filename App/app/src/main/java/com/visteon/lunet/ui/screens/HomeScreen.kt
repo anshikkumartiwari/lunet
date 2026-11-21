@@ -30,7 +30,6 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.TurnLeft
 import androidx.compose.material.icons.filled.TurnRight
-import androidx.compose.material.icons.filled.UturnLeft
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -43,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -462,13 +462,19 @@ private fun NavigationMirrorCard(
                             .border(1.dp, colors.border, RoundedCornerShape(12.dp)),
                         contentAlignment = Alignment.Center
                     ) {
+                        val isUturn = direction == NavDirection.UTURN
                         val icon = when (direction) {
                             NavDirection.LEFT -> Icons.Default.TurnLeft
                             NavDirection.RIGHT -> Icons.Default.TurnRight
-                            NavDirection.UTURN -> Icons.Default.UturnLeft
+                            NavDirection.UTURN -> Icons.Default.TurnLeft
                             NavDirection.STRAIGHT -> Icons.Default.Navigation
                         }
-                        Icon(icon, contentDescription = null, tint = colors.cyan, modifier = Modifier.size(24.dp))
+                        Icon(
+                            icon,
+                            contentDescription = null,
+                            tint = colors.cyan,
+                            modifier = Modifier.size(24.dp).let { if (isUturn) it.rotate(180f) else it }
+                        )
                     }
 
                     Spacer(modifier = Modifier.width(14.dp))
