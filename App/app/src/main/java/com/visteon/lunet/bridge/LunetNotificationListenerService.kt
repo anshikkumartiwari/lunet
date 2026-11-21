@@ -25,17 +25,59 @@ class LunetNotificationListenerService : NotificationListenerService() {
         setupMediaSessionObserver()
     }
 
+    private val recentDedupe = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     override fun onListenerConnected() {
         super.onListenerConnected()
         Log.i(tag, "Notification Listener connected!")
         LunetApp.instance?.setNotificationListenerActive(true)
+        LunetApp.instance?.notifListenerService = this
         updateActiveMediaSessions()
+        syncRecentNotificationsHistory()
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
         Log.w(tag, "Notification Listener disconnected!")
         LunetApp.instance?.setNotificationListenerActive(false)
+        LunetApp.instance?.notifListenerService = null
+    }
+
+    fun syncRecentNotificationsHistory() {
+        try {
+            val notifs = activeNotifications ?: return
+            val filtered = notifs.filter { sbn ->
+                val pkg = sbn.packageName ?: ""
+                val flags = sbn.notification?.flags ?: 0
+                sbn.isClearable &&
+                (flags and Notification.FLAG_GROUP_SUMMARY == 0) &&
+                (flags and Notification.FLAG_ONGOING_EVENT == 0) &&
+                pkg != packageName &&
+                pkg != "android" &&
+                pkg != "com.google.android.apps.maps"
+            }.sortedByDescending { it.postTime }.take(5).reversed()
+
+            if (filtered.isNotEmpty()) {
+                LunetApp.instance?.bleManager?.enqueuePacket("NOTIF_CLEAR")
+                for (sbn in filtered) {
+                    val extras = sbn.notification.extras
+                    val title = extras.getString(Notification.EXTRA_TITLE) ?: ""
+                    val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+                    val appName = try {
+                        val appInfo = packageManager.getApplicationInfo(sbn.packageName, 0)
+                        packageManager.getApplicationLabel(appInfo).toString()
+                    } catch (e: Exception) {
+                        sbn.packageName.substringAfterLast('.').replaceFirstChar { it.uppercase() }
+                    }
+                    val body = if (title.isNotBlank() && text.isNotBlank()) "$title - $text" else title.ifBlank { text }
+                    val cleanApp = com.visteon.lunet.ble.LunetBleManager.sanitizeField(appName).take(20)
+                    val cleanMsg = com.visteon.lunet.ble.LunetBleManager.sanitizeField(body).take(50)
+                    LunetApp.instance?.bleManager?.enqueuePacket("NOTIF_HIST:$cleanApp|$cleanMsg")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "History sync warning: ${e.message}")
+        }
     }
 
     private fun setupMediaSessionObserver() {
@@ -86,14 +128,26 @@ class LunetNotificationListenerService : NotificationListenerService() {
             return
         }
 
-        // 2. Ignore non-clearable / ongoing notifications and self notifications
+        // 2. Ignore group summaries, ongoing/foreground, self, system, and Maps
+        val flags = sbn.notification.flags
+        if ((flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
+        if ((flags and Notification.FLAG_ONGOING_EVENT) != 0) return
         if (!sbn.isClearable || pkg == packageName || pkg == "android") return
 
-        val extras = sbn.notification?.extras ?: return
-        val title = extras.getString(Notification.EXTRA_TITLE) ?: ""
-        val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+        val notifExtras = sbn.notification?.extras ?: return
+        val title = notifExtras.getString(Notification.EXTRA_TITLE) ?: ""
+        val text = notifExtras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+        val bigText = notifExtras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString() ?: ""
 
-        if (title.isBlank() && text.isBlank()) return
+        val detailText = text.ifBlank { bigText }
+        if (title.isBlank() && detailText.isBlank()) return
+
+        // Deduplicate arrivals within 2000 ms
+        val now = System.currentTimeMillis()
+        val dedupeKey = "$pkg:$title:$detailText"
+        val lastSeen = recentDedupe[dedupeKey] ?: 0L
+        if (now - lastSeen < 2000L) return
+        recentDedupe[dedupeKey] = now
 
         // Resolve user-friendly app label
         val appName = try {
@@ -103,10 +157,10 @@ class LunetNotificationListenerService : NotificationListenerService() {
             pkg.substringAfterLast('.').replaceFirstChar { it.uppercase() }
         }
 
-        val messageBody = if (title.isNotBlank() && text.isNotBlank()) {
-            "$title: $text"
+        val messageBody = if (title.isNotBlank() && detailText.isNotBlank()) {
+            "$title - $detailText"
         } else {
-            title.ifBlank { text }
+            title.ifBlank { detailText }
         }
 
         // Forward to Lunet App

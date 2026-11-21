@@ -55,6 +55,10 @@ class LunetApp : Application() {
     private val _telemetry = MutableStateFlow(ClusterTelemetry())
     val telemetry: StateFlow<ClusterTelemetry> = _telemetry.asStateFlow()
 
+    // Recent notifications mirror cache
+    private val _recentNotifications = MutableStateFlow<List<com.visteon.lunet.ble.NotifMirrorItem>>(emptyList())
+    val recentNotifications: StateFlow<List<com.visteon.lunet.ble.NotifMirrorItem>> = _recentNotifications.asStateFlow()
+
     // Notification listener active flag
     private val _isNotificationListenerActive = MutableStateFlow(false)
     val isNotificationListenerActive: StateFlow<Boolean> = _isNotificationListenerActive.asStateFlow()
@@ -199,14 +203,28 @@ class LunetApp : Application() {
         }
     }
 
+    var notifListenerService: com.visteon.lunet.bridge.LunetNotificationListenerService? = null
+
+    fun syncNotificationHistory() {
+        notifListenerService?.syncRecentNotificationsHistory()
+    }
+
     fun onNotificationCaptured(appName: String, message: String) {
-        if (!syncNotifsEnabled.value) return
-        val clampedMsg = message.take(60)
-        val notifPacket = "NOTIF:$appName|$clampedMsg"
+        val cleanApp = LunetBleManager.sanitizeField(appName).take(20)
+        val cleanMsg = LunetBleManager.sanitizeField(message).take(50)
+        val item = com.visteon.lunet.ble.NotifMirrorItem(appName = cleanApp, message = cleanMsg)
+        val currentList = _recentNotifications.value.toMutableList()
+        currentList.add(0, item)
+        _recentNotifications.value = currentList.take(5)
+
         _telemetry.value = _telemetry.value.copy(
-            latestAlertText = "$appName: $clampedMsg"
+            latestAlertText = "$cleanApp: $cleanMsg"
         )
-        bleManager.enqueuePacket(notifPacket)
+
+        if (syncNotifsEnabled.value) {
+            val notifPacket = "NOTIF:$cleanApp|$cleanMsg"
+            bleManager.enqueuePacket(notifPacket)
+        }
     }
 
     fun onNavigationUpdated(

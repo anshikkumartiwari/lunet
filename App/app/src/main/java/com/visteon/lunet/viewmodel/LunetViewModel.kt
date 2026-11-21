@@ -41,6 +41,7 @@ class LunetViewModel(application: Application) : AndroidViewModel(application) {
     val weather: StateFlow<String> = app.syncEngine.weatherState
     val isAlarmActive: StateFlow<Boolean> = app.phoneFinder.isAlarmActive
     val isNotificationListenerActive: StateFlow<Boolean> = app.isNotificationListenerActive
+    val recentNotifications: StateFlow<List<com.visteon.lunet.ble.NotifMirrorItem>> = app.recentNotifications
 
     // Sync toggles
     val syncMusic = app.syncMusicEnabled
@@ -48,6 +49,7 @@ class LunetViewModel(application: Application) : AndroidViewModel(application) {
     val syncNav = app.syncNavEnabled
     val syncCalls = app.syncCallsEnabled
     val syncTimeBattWeather = app.syncTimeBattWeather
+    val autoReconnect = app.autoReconnectEnabled
 
     // UI state
     private val _currentTab = MutableStateFlow(ScreenTab.COCKPIT)

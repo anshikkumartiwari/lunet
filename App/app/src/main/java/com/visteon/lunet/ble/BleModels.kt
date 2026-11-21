@@ -79,3 +79,13 @@ data class ClusterTelemetry(
     val latestAlertText: String = "",
     val latestAlertColor: Long = 0xFFF37B20
 )
+
+data class NotifMirrorItem(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val appName: String,
+    val message: String,
+    val timestamp: Long = System.currentTimeMillis()
+) {
+    val timeFormatted: String
+        get() = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(timestamp))
+}
