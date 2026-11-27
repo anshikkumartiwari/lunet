@@ -8,11 +8,13 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.visteon.lunet.MainActivity
 import com.visteon.lunet.R
 import kotlinx.coroutines.CoroutineScope
@@ -44,7 +46,7 @@ class LunetBleService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        bleManager = LunetBleManager(applicationContext)
+        bleManager = com.visteon.lunet.LunetApp.instance?.bleManager ?: LunetBleManager(applicationContext)
         createNotificationChannel()
         startForegroundServiceNotification("Visteon Lunet OS 3.0: Ready")
 
@@ -133,21 +135,36 @@ class LunetBleService : Service() {
 
     @SuppressLint("InlinedApi")
     private fun startForegroundServiceNotification(initialText: String) {
-        val notification = buildNotification(initialText)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            val notification = buildNotification(initialText)
+            val hasConnectPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                ContextCompat.checkSelfPermission(
+                    this,
+                    android.Manifest.permission.BLUETOOTH_CONNECT
+                ) == PackageManager.PERMISSION_GRANTED
+            } else true
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && hasConnectPermission) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("LunetBleService", "startForeground failed: ${e.message}")
         }
     }
 
     private fun updateNotification(text: String) {
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-        manager?.notify(NOTIFICATION_ID, buildNotification(text))
+        try {
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            manager?.notify(NOTIFICATION_ID, buildNotification(text))
+        } catch (e: Exception) {
+            android.util.Log.w("LunetBleService", "updateNotification failed: ${e.message}")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -168,7 +185,6 @@ class LunetBleService : Service() {
 
     override fun onDestroy() {
         cancelReconnect()
-        bleManager.disconnect()
         super.onDestroy()
     }
 

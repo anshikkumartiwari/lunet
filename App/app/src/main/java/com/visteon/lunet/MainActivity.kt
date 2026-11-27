@@ -20,11 +20,20 @@ class MainActivity : ComponentActivity() {
     private val requestPermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        // Permissions handled smoothly; UI reflects granted state dynamically
-        (application as? LunetApp)?.telephonyBridge?.registerCallListener()
-        val allGranted = permissions.values.all { it }
-        if (allGranted) {
+        val app = application as? LunetApp
+        app?.telephonyBridge?.registerCallListener()
+
+        val bleScanGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions[Manifest.permission.BLUETOOTH_SCAN] == true
+        } else true
+
+        val bleConnectGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions[Manifest.permission.BLUETOOTH_CONNECT] == true
+        } else true
+
+        if (bleScanGranted && bleConnectGranted) {
             viewModel.connect()
+            app?.carKeyManager?.autoConnectIfSaved()
         }
     }
 

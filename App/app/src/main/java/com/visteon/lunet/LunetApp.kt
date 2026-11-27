@@ -74,6 +74,19 @@ class LunetApp : Application() {
         super.onCreate()
         instance = this
 
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            Log.e(tag, "FATAL UNCAUGHT EXCEPTION on thread ${thread.name}: ${throwable.message}", throwable)
+            try {
+                val crashFile = java.io.File(filesDir, "last_crash.txt")
+                val sw = java.io.StringWriter()
+                val pw = java.io.PrintWriter(sw)
+                throwable.printStackTrace(pw)
+                crashFile.writeText(sw.toString())
+            } catch (_: Exception) {}
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
+
         bleManager = LunetBleManager(this)
         mediaBridge = MediaBridgeManager(this)
         phoneFinder = PhoneFinderManager(this)
@@ -116,13 +129,17 @@ class LunetApp : Application() {
     }
 
     fun startBleForegroundService() {
-        val serviceIntent = Intent(this, LunetBleService::class.java).apply {
-            action = LunetBleService.ACTION_CONNECT
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
+        try {
+            val serviceIntent = Intent(this, LunetBleService::class.java).apply {
+                action = LunetBleService.ACTION_CONNECT
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to start BLE foreground service: ${e.message}")
         }
     }
 

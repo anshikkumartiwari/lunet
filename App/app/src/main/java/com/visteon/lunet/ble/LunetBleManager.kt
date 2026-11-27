@@ -15,9 +15,11 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -169,9 +171,36 @@ class LunetBleManager(private val context: Context) {
         }
     }
 
+    private fun hasBleScanPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun hasBleConnectPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+    }
+
     @SuppressLint("MissingPermission")
     fun startScan() {
-        val scanner = bluetoothAdapter?.bluetoothLeScanner
+        if (!hasBleScanPermission()) {
+            Log.w(tag, "BLE startScan skipped: BLUETOOTH_SCAN permission not yet granted")
+            return
+        }
+        val adapter = bluetoothAdapter
+        if (adapter == null || !adapter.isEnabled) {
+            Log.w(tag, "BLE startScan skipped: Bluetooth adapter is off or unavailable")
+            _connectionState.value = BleConnectionState.DISCONNECTED
+            return
+        }
+        val scanner = adapter.bluetoothLeScanner
         if (scanner == null || isScanning) return
 
         _connectionState.value = BleConnectionState.SCANNING
@@ -196,8 +225,8 @@ class LunetBleManager(private val context: Context) {
                     _connectionState.value = BleConnectionState.DISCONNECTED
                 }
             }
-        } catch (e: SecurityException) {
-            Log.e(tag, "Missing BLE permissions: ${e.message}")
+        } catch (e: Exception) {
+            Log.e(tag, "BLE Scan initiation error: ${e.message}")
             _connectionState.value = BleConnectionState.DISCONNECTED
             isScanning = false
         }
@@ -207,7 +236,9 @@ class LunetBleManager(private val context: Context) {
     fun stopScan() {
         if (!isScanning) return
         try {
-            bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback)
+            if (hasBleScanPermission() && bluetoothAdapter?.isEnabled == true) {
+                bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback)
+            }
         } catch (e: Exception) {
             Log.w(tag, "Error stopping scan: ${e.message}")
         } finally {
@@ -219,7 +250,14 @@ class LunetBleManager(private val context: Context) {
     fun connectToDevice(device: BluetoothDevice) {
         stopScan()
         _connectionState.value = BleConnectionState.CONNECTING
-        Log.i(tag, "Connecting to ${device.name ?: device.address} (${device.address})...")
+
+        val safeName = try {
+            if (hasBleConnectPermission()) device.name else null
+        } catch (e: Exception) {
+            null
+        } ?: device.address
+
+        Log.i(tag, "Connecting to $safeName (${device.address})...")
 
         lastKnownMacAddress = device.address
         context.getSharedPreferences("lunet_ble", Context.MODE_PRIVATE)
@@ -298,8 +336,14 @@ class LunetBleManager(private val context: Context) {
     private val scanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
-            result?.device?.let { device ->
-                val name = device.name ?: result.scanRecord?.deviceName
+            try {
+                val device = result?.device ?: return
+                val safeDevName = try {
+                    if (hasBleConnectPermission()) device.name else null
+                } catch (e: Exception) {
+                    null
+                }
+                val name = result.scanRecord?.deviceName ?: safeDevName
                 val hasService = result.scanRecord?.serviceUuids?.any { it.uuid == BleConstants.SERVICE_UUID } == true
                 val matchesMac = lastKnownMacAddress != null && device.address.equals(lastKnownMacAddress, ignoreCase = true)
 
@@ -307,6 +351,8 @@ class LunetBleManager(private val context: Context) {
                     Log.i(tag, "Discovered target cluster: '$name' (${device.address})")
                     connectToDevice(device)
                 }
+            } catch (e: Exception) {
+                Log.w(tag, "Error handling BLE scan result: ${e.message}")
             }
         }
 

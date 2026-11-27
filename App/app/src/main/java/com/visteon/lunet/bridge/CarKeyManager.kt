@@ -13,6 +13,7 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Build
@@ -20,6 +21,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -121,25 +123,46 @@ class CarKeyManager(
     // Phone simulation buzzer audio & haptics
     private var toneGenerator: ToneGenerator? = null
     private val vibrator: Vibrator? get() {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
-            vm?.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vm?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 
-    init {
-        // Automatically start scanning or connect if previously paired
-        autoConnectIfSaved()
+    fun hasBleScanPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    fun hasBleConnectPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
     }
 
     fun autoConnectIfSaved() {
+        if (!hasBleScanPermission() || !hasBleConnectPermission()) {
+            Log.w(tag, "Car Key auto-connect deferred: BLE permissions not yet granted")
+            return
+        }
         val lastMac = prefs.getString("last_carkey_mac", null)
-        if (!lastMac.isNullOrBlank() && bluetoothAdapter?.isEnabled == true) {
+        val adapter = bluetoothAdapter
+        if (!lastMac.isNullOrBlank() && adapter != null && adapter.isEnabled) {
             try {
-                val device = bluetoothAdapter?.getRemoteDevice(lastMac)
+                val device = adapter.getRemoteDevice(lastMac)
                 if (device != null) {
                     Log.i(tag, "Attempting direct connect to saved Car Key ($lastMac)")
                     connectToDevice(device)
@@ -155,7 +178,16 @@ class CarKeyManager(
 
     @SuppressLint("MissingPermission")
     fun startScan() {
-        val scanner = bluetoothAdapter?.bluetoothLeScanner
+        if (!hasBleScanPermission()) {
+            Log.w(tag, "Car Key startScan skipped: Missing BLUETOOTH_SCAN permission")
+            return
+        }
+        val adapter = bluetoothAdapter
+        if (adapter == null || !adapter.isEnabled) {
+            Log.w(tag, "Car Key startScan skipped: Bluetooth adapter is off or unavailable")
+            return
+        }
+        val scanner = adapter.bluetoothLeScanner
         if (scanner == null || isScanning || _connectionState.value == CarKeyConnectionState.CONNECTED) return
 
         _connectionState.value = CarKeyConnectionState.SCANNING
@@ -178,8 +210,8 @@ class CarKeyManager(
                     _connectionState.value = CarKeyConnectionState.DISCONNECTED
                 }
             }
-        } catch (e: SecurityException) {
-            Log.e(tag, "Missing BLE permissions: ${e.message}")
+        } catch (e: Exception) {
+            Log.e(tag, "Car Key startScan failed: ${e.message}")
             _connectionState.value = CarKeyConnectionState.DISCONNECTED
             isScanning = false
         }
@@ -189,9 +221,11 @@ class CarKeyManager(
     fun stopScan() {
         if (!isScanning) return
         try {
-            bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback)
+            if (hasBleScanPermission() && bluetoothAdapter?.isEnabled == true) {
+                bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback)
+            }
         } catch (e: Exception) {
-            Log.w(tag, "Error stopping scan: ${e.message}")
+            Log.w(tag, "Error stopping Car Key scan: ${e.message}")
         } finally {
             isScanning = false
         }
@@ -201,13 +235,22 @@ class CarKeyManager(
     fun connectToDevice(device: BluetoothDevice) {
         stopScan()
         _connectionState.value = CarKeyConnectionState.CONNECTING
-        Log.i(tag, "Connecting to Car Key: ${device.name ?: device.address} (${device.address})...")
 
-        val name = device.name ?: "Car Key"
-        _deviceName.value = name
+        val safeName = try {
+            if (hasBleConnectPermission()) device.name else null
+        } catch (e: Exception) {
+            null
+        } ?: "Car Key"
+
+        Log.i(tag, "Connecting to Car Key: $safeName (${device.address})...")
+        _deviceName.value = safeName
 
         // Save last known MAC
-        prefs.edit().putString("last_carkey_mac", device.address).apply()
+        try {
+            prefs.edit().putString("last_carkey_mac", device.address).apply()
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to persist last_carkey_mac: ${e.message}")
+        }
 
         // Clean up prior GATT
         activeGatt?.let { gatt ->
@@ -256,21 +299,29 @@ class CarKeyManager(
     private val scanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
-            result?.device?.let { device ->
-                val name = (device.name ?: result.scanRecord?.deviceName ?: "").lowercase()
+            try {
+                val device = result?.device ?: return
+                val safeDevName = try {
+                    if (hasBleConnectPermission()) device.name else null
+                } catch (e: Exception) {
+                    null
+                }
+                val name = (result.scanRecord?.deviceName ?: safeDevName ?: "").lowercase()
+
                 val hasVendorService = result.scanRecord?.serviceUuids?.any {
                     it.uuid == CarKeyBleConstants.SERVICE_VENDOR || it.uuid == CarKeyBleConstants.SERVICE_IMMEDIATE_ALERT
                 } == true
 
                 val savedMac = prefs.getString("last_carkey_mac", null)
                 val matchesMac = savedMac != null && device.address.equals(savedMac, ignoreCase = true)
-
                 val matchesName = CarKeyBleConstants.TARGET_NAMES.any { name.contains(it) }
 
                 if (matchesName || hasVendorService || matchesMac) {
-                    Log.i(tag, "Discovered target Car Key: '${device.name}' (${device.address})")
+                    Log.i(tag, "Discovered target Car Key: '$name' (${device.address})")
                     connectToDevice(device)
                 }
+            } catch (e: Exception) {
+                Log.w(tag, "Error in Car Key onScanResult: ${e.message}")
             }
         }
 

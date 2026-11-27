@@ -45,8 +45,9 @@ class SyncEngine(
 ) {
     private val tag = "SyncEngine"
     private val scope = CoroutineScope(Dispatchers.IO)
-    private val fusedLocationClient: FusedLocationProviderClient =
+    private val fusedLocationClient: FusedLocationProviderClient by lazy {
         LocationServices.getFusedLocationProviderClient(context)
+    }
 
     private val _weatherState = MutableStateFlow("26C Clear")
     val weatherState: StateFlow<String> = _weatherState.asStateFlow()
