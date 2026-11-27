@@ -587,6 +587,7 @@ static void startWifiConnection(const char *ssid, const char *password);
 static void scanWifiNetworks();
 static void updateWifiScanResults();
 static void restartBleAdvertising();
+static void refreshVehicleWidgets();
 static void triggerStandaloneWeatherSync();
 static void applyStandaloneNetSyncResult();
 
@@ -2457,7 +2458,8 @@ static void buildPageVehicle() {
   });
   vehLockBtn = makeBtn(carCard, "LOCK", 104, 304, 84, 42, [](lv_event_t *e) {
     vs.doorsLocked = !vs.doorsLocked;
-    triggerAlert(vs.doorsLocked ? "DOORS LOCKED" : "DOORS UNLOCKED", pal().cyan, 2000);
+    triggerAlert(vs.doorsLocked ? "DOORS LOCKED" : "DOORS UNLOCKED", vs.doorsLocked ? pal().cyan : pal().amber, 2000);
+    sendBlePacket(vs.doorsLocked ? "EVT:LOCK:LOCKED" : "EVT:LOCK:UNLOCKED");
     refreshVehicleWidgets();
   });
   vehTrunkBtn = makeBtn(carCard, "TRUNK", 194, 304, 84, 42, [](lv_event_t *e) {
@@ -3236,6 +3238,26 @@ static void processBleCommand(const char *command) {
     }
     if (drvNavArrowBox) lv_obj_invalidate(drvNavArrowBox);
     if (currentPage == PAGE_NAV) refreshNavHudCard();
+  } else if (cmd.equalsIgnoreCase("CMD:LOCK:TOGGLE")) {
+    vs.doorsLocked = !vs.doorsLocked;
+    triggerAlert(vs.doorsLocked ? "DOORS LOCKED" : "DOORS UNLOCKED", vs.doorsLocked ? pal().cyan : pal().amber, 2000);
+    sendBlePacket(vs.doorsLocked ? "EVT:LOCK:LOCKED" : "EVT:LOCK:UNLOCKED");
+    refreshVehicleWidgets();
+  } else if (cmd.equalsIgnoreCase("CMD:LOCK:LOCK")) {
+    vs.doorsLocked = true;
+    triggerAlert("DOORS LOCKED", pal().cyan, 2000);
+    sendBlePacket("EVT:LOCK:LOCKED");
+    refreshVehicleWidgets();
+  } else if (cmd.equalsIgnoreCase("CMD:LOCK:UNLOCK")) {
+    vs.doorsLocked = false;
+    triggerAlert("DOORS UNLOCKED", pal().amber, 2000);
+    sendBlePacket("EVT:LOCK:UNLOCKED");
+    refreshVehicleWidgets();
+  } else if (cmd.equalsIgnoreCase("CMD:BUZZER:ALERT") || cmd.equalsIgnoreCase("CMD:KEY:PANIC")) {
+    triggerAlert("CAR KEY PANIC / ALARM", pal().red, 3500);
+    refreshVehicleWidgets();
+  } else if (cmd.equalsIgnoreCase("CMD:BLE:RESET")) {
+    restartBleAdvertising();
   }
 }
 

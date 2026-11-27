@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +26,8 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -56,6 +59,7 @@ import androidx.compose.ui.unit.sp
 import com.visteon.lunet.ble.BleConnectionState
 import com.visteon.lunet.ble.NavDirection
 import com.visteon.lunet.ble.NotifMirrorItem
+import com.visteon.lunet.bridge.CarKeyConnectionState
 import com.visteon.lunet.ui.components.AudioWaveformVisualizer
 import com.visteon.lunet.ui.components.BleRadarRing
 import com.visteon.lunet.ui.theme.LunetTheme
@@ -79,6 +83,11 @@ fun HomeScreen(viewModel: LunetViewModel) {
     val mediaInfo by viewModel.mediaInfo.collectAsState()
     val callState by viewModel.callState.collectAsState()
     val recentNotifs by viewModel.recentNotifications.collectAsState()
+    val carKeyConnectionState by viewModel.carKeyConnectionState.collectAsState()
+    val isCarLocked by viewModel.isCarLocked.collectAsState()
+    val carKeyBattery by viewModel.carKeyBattery.collectAsState()
+    val isCarKeyBuzzerActive by viewModel.isCarKeyBuzzerActive.collectAsState()
+    val carKeyActionText by viewModel.carKeyActionText.collectAsState()
     val haptic = LocalHapticFeedback.current
 
     LazyColumn(
@@ -107,6 +116,36 @@ fun HomeScreen(viewModel: LunetViewModel) {
                 onResetClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     viewModel.forceResetBle()
+                }
+            )
+        }
+
+        // Minimal Car Key Card
+        item {
+            CarKeyCard(
+                connectionState = carKeyConnectionState,
+                isLocked = isCarLocked,
+                batteryLevel = carKeyBattery,
+                isBuzzerActive = isCarKeyBuzzerActive,
+                actionText = carKeyActionText,
+                onToggleLock = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.toggleCarLock()
+                },
+                onToggleBuzzer = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    if (isCarKeyBuzzerActive) viewModel.stopCarKeyBuzzer() else viewModel.triggerCarKeyBuzzer()
+                },
+                onConnectKey = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    if (carKeyConnectionState == CarKeyConnectionState.CONNECTED ||
+                        carKeyConnectionState == CarKeyConnectionState.SCANNING ||
+                        carKeyConnectionState == CarKeyConnectionState.CONNECTING
+                    ) {
+                        viewModel.disconnectCarKey()
+                    } else {
+                        viewModel.connectCarKey()
+                    }
                 }
             )
         }
@@ -385,6 +424,229 @@ private fun StatusMetricChip(label: String, subLabel: String, tint: Color) {
                 fontSize = 9.sp,
                 fontFamily = FontFamily.Monospace
             )
+        }
+    }
+}
+
+@Composable
+private fun CarKeyCard(
+    connectionState: CarKeyConnectionState,
+    isLocked: Boolean,
+    batteryLevel: Int?,
+    isBuzzerActive: Boolean,
+    actionText: String,
+    onToggleLock: () -> Unit,
+    onToggleBuzzer: () -> Unit,
+    onConnectKey: () -> Unit
+) {
+    val colors = LunetTheme.colors
+    val isConnected = connectionState == CarKeyConnectionState.CONNECTED
+    val isConnecting = connectionState == CarKeyConnectionState.SCANNING || connectionState == CarKeyConnectionState.CONNECTING
+
+    val statusDotColor = when {
+        isConnected -> colors.green
+        isConnecting -> colors.cyan
+        else -> colors.textMuted
+    }
+
+    val statusLabel = when {
+        isConnected -> "Connected"
+        isConnecting -> "Connecting..."
+        else -> "Disconnected"
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(colors.surface)
+            .border(
+                1.dp,
+                if (isBuzzerActive) colors.red else colors.border,
+                RoundedCornerShape(16.dp)
+            )
+            .padding(14.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Header Row: Title "Car Key", minimal status dot, battery % & connect pill
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(statusDotColor)
+                    )
+                    Text(
+                        text = "Car Key",
+                        color = colors.text,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.3.sp
+                    )
+                    Text(
+                        text = "•  $statusLabel",
+                        color = statusDotColor,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (batteryLevel != null && isConnected) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(colors.panelAlt)
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "BATT $batteryLevel%",
+                                color = colors.textMuted,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isConnected) colors.panelAlt else VisteonOrange.copy(alpha = 0.2f))
+                            .clickable(onClick = onConnectKey)
+                            .border(
+                                1.dp,
+                                if (isConnected) colors.border else VisteonOrange.copy(alpha = 0.5f),
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = if (isConnected) "DISCONNECT" else if (isConnecting) "SEARCHING" else "PAIR FOB",
+                            color = if (isConnected) colors.textMuted else VisteonOrange,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+                }
+            }
+
+            // Quick Action Buttons: Lock/Unlock + Buzzer
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Lock / Unlock Button
+                Button(
+                    onClick = onToggleLock,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.panelAlt
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp)
+                        .border(
+                            1.dp,
+                            if (isLocked) colors.cyan.copy(alpha = 0.8f) else colors.amber.copy(alpha = 0.8f),
+                            RoundedCornerShape(12.dp)
+                        )
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                            contentDescription = null,
+                            tint = if (isLocked) colors.cyan else colors.amber,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = if (isLocked) "LOCKED" else "UNLOCKED",
+                            color = if (isLocked) colors.cyan else colors.amber,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+                }
+
+                // Buzzer Simulation Button
+                Button(
+                    onClick = onToggleBuzzer,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isBuzzerActive) colors.red else colors.panelAlt
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp)
+                        .border(
+                            1.dp,
+                            if (isBuzzerActive) colors.red else colors.border,
+                            RoundedCornerShape(12.dp)
+                        )
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.VolumeUp,
+                            contentDescription = null,
+                            tint = if (isBuzzerActive) colors.bg else colors.text,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = if (isBuzzerActive) "RINGING..." else "BUZZER",
+                            color = if (isBuzzerActive) colors.bg else colors.text,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+                }
+            }
+
+            // Compact Hint / Live Action Text
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "1-click: Lock/Unlock  •  2-click: Buzzer",
+                    color = colors.textMuted,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+                if (actionText.isNotBlank()) {
+                    Text(
+                        text = actionText,
+                        color = if (isBuzzerActive) colors.red else colors.cyan,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
         }
     }
 }

@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import com.visteon.lunet.ble.DriveMode
 import com.visteon.lunet.ble.Gear
 import com.visteon.lunet.ble.NavDirection
+import com.visteon.lunet.bridge.CarKeyConnectionState
 import com.visteon.lunet.ui.theme.LunetTheme
 import com.visteon.lunet.ui.theme.VisteonOrange
 import com.visteon.lunet.viewmodel.LunetViewModel
@@ -47,6 +48,9 @@ import com.visteon.lunet.viewmodel.LunetViewModel
 fun DemoScreen(viewModel: LunetViewModel) {
     val colors = LunetTheme.colors
     val telemetry by viewModel.telemetry.collectAsState()
+    val isCarLocked by viewModel.isCarLocked.collectAsState()
+    val isCarKeyBuzzerActive by viewModel.isCarKeyBuzzerActive.collectAsState()
+    val carKeyConnectionState by viewModel.carKeyConnectionState.collectAsState()
     val haptic = LocalHapticFeedback.current
 
     val isOverspeed = telemetry.speedKmh > telemetry.speedLimitKmh && telemetry.speedLimitKmh > 0
@@ -416,6 +420,114 @@ fun DemoScreen(viewModel: LunetViewModel) {
                         ) {
                             Text("TEST SPEAKER OFF", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = colors.textMuted)
                         }
+                    }
+                }
+            }
+        }
+
+        // Section: Car Key Tracker Simulation
+        item {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(colors.surface)
+                    .border(1.dp, if (isCarKeyBuzzerActive) colors.red else colors.border, RoundedCornerShape(16.dp))
+                    .padding(16.dp)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "CAR KEY TRACKER (iTAG FOB)",
+                            color = colors.textMuted,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 0.8.sp
+                        )
+
+                        Text(
+                            text = if (carKeyConnectionState == CarKeyConnectionState.CONNECTED) "CONNECTED" else "STANDBY",
+                            color = if (carKeyConnectionState == CarKeyConnectionState.CONNECTED) colors.green else colors.textMuted,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.simulateCarKeyClick()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.panelAlt),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f).height(44.dp)
+                                .border(1.dp, if (isCarLocked) colors.cyan else colors.amber, RoundedCornerShape(10.dp))
+                        ) {
+                            Text(
+                                text = if (isCarLocked) "CLICK: UNLOCK" else "CLICK: LOCK",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                color = if (isCarLocked) colors.cyan else colors.amber
+                            )
+                        }
+
+                        Button(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.simulateCarKeyDoubleClick()
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isCarKeyBuzzerActive) colors.red else colors.panelAlt
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f).height(44.dp)
+                                .border(1.dp, if (isCarKeyBuzzerActive) colors.red else colors.border, RoundedCornerShape(10.dp))
+                        ) {
+                            Text(
+                                text = if (isCarKeyBuzzerActive) "RINGING..." else "2-CLICK: BUZZER",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                color = if (isCarKeyBuzzerActive) colors.bg else colors.text
+                            )
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            if (carKeyConnectionState == CarKeyConnectionState.CONNECTED ||
+                                carKeyConnectionState == CarKeyConnectionState.SCANNING ||
+                                carKeyConnectionState == CarKeyConnectionState.CONNECTING
+                            ) {
+                                viewModel.disconnectCarKey()
+                            } else {
+                                viewModel.connectCarKey()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = colors.panelAlt),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().height(40.dp)
+                            .border(1.dp, colors.border, RoundedCornerShape(10.dp))
+                    ) {
+                        Text(
+                            text = if (carKeyConnectionState == CarKeyConnectionState.CONNECTED) "DISCONNECT CAR KEY FOB" else "SCAN / RECONNECT CAR KEY FOB",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = colors.textMuted
+                        )
                     }
                 }
             }

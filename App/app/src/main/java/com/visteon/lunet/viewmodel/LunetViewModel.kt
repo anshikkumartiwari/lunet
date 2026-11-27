@@ -11,6 +11,7 @@ import com.visteon.lunet.ble.DriveMode
 import com.visteon.lunet.ble.Gear
 import com.visteon.lunet.ble.NavDirection
 import com.visteon.lunet.bridge.CallState
+import com.visteon.lunet.bridge.CarKeyConnectionState
 import com.visteon.lunet.bridge.MediaPlaybackInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -41,6 +42,14 @@ class LunetViewModel(application: Application) : AndroidViewModel(application) {
     val isAlarmActive: StateFlow<Boolean> = app.phoneFinder.isAlarmActive
     val isNotificationListenerActive: StateFlow<Boolean> = app.isNotificationListenerActive
     val recentNotifications: StateFlow<List<com.visteon.lunet.ble.NotifMirrorItem>> = app.recentNotifications
+
+    // Car Key Tracker (iTAG Bluetooth Fob)
+    val carKeyConnectionState: StateFlow<CarKeyConnectionState> = app.carKeyManager.connectionState
+    val isCarLocked: StateFlow<Boolean> = app.carKeyManager.isCarLocked
+    val carKeyBattery: StateFlow<Int?> = app.carKeyManager.batteryLevel
+    val isCarKeyBuzzerActive: StateFlow<Boolean> = app.carKeyManager.isBuzzerActive
+    val carKeyActionText: StateFlow<String> = app.carKeyManager.lastActionText
+    val carKeyDeviceName: StateFlow<String> = app.carKeyManager.deviceName
 
     // Sync toggles
     val syncMusic = app.syncMusicEnabled
@@ -121,6 +130,13 @@ class LunetViewModel(application: Application) : AndroidViewModel(application) {
     fun setSpeaker(on: Boolean) = app.telephonyBridge.setSpeakerphone(on)
     fun declineCall() = app.telephonyBridge.declineCall()
 
+    // Car Key Tracker Actions
+    fun connectCarKey() = app.carKeyManager.startScan()
+    fun disconnectCarKey() = app.carKeyManager.disconnect()
+    fun toggleCarLock() = app.carKeyManager.toggleCarLock()
+    fun triggerCarKeyBuzzer() = app.carKeyManager.triggerBuzzer()
+    fun stopCarKeyBuzzer() = app.carKeyManager.stopBuzzer()
+
     // Demo Remote Controls
     fun setSpeed(spd: Float) {
         app.setSpeed(spd)
@@ -165,6 +181,15 @@ class LunetViewModel(application: Application) : AndroidViewModel(application) {
 
     fun simulateSpeaker(on: Boolean) {
         app.bleManager.enqueuePacket(if (on) "CALL:SPEAKER:ON" else "CALL:SPEAKER:OFF")
+    }
+
+    // Car Key Simulation
+    fun simulateCarKeyClick() {
+        app.carKeyManager.toggleCarLock()
+    }
+
+    fun simulateCarKeyDoubleClick() {
+        app.carKeyManager.triggerBuzzer()
     }
 
     fun sendSampleNotification(

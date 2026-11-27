@@ -11,6 +11,8 @@ import com.visteon.lunet.ble.Gear
 import com.visteon.lunet.ble.LunetBleManager
 import com.visteon.lunet.ble.LunetBleService
 import com.visteon.lunet.ble.NavDirection
+import com.visteon.lunet.bridge.CarKeyEvent
+import com.visteon.lunet.bridge.CarKeyManager
 import com.visteon.lunet.bridge.MediaBridgeManager
 import com.visteon.lunet.bridge.PhoneFinderManager
 import com.visteon.lunet.bridge.SyncEngine
@@ -41,6 +43,8 @@ class LunetApp : Application() {
     lateinit var phoneFinder: PhoneFinderManager
         private set
     lateinit var syncEngine: SyncEngine
+        private set
+    lateinit var carKeyManager: CarKeyManager
         private set
 
     // Feature toggles for Bridge screen
@@ -80,6 +84,25 @@ class LunetApp : Application() {
         telephonyBridge = TelephonyBridgeManager(this) { callPacket ->
             if (syncCallsEnabled.value) {
                 bleManager.enqueuePacket(callPacket)
+            }
+        }
+
+        carKeyManager = CarKeyManager(this) { event, isLocked ->
+            Log.i(tag, "CarKey event received: $event (isLocked=$isLocked)")
+            when (event) {
+                CarKeyEvent.SINGLE_CLICK -> {
+                    val cmd = if (isLocked) "CMD:LOCK:LOCK" else "CMD:LOCK:UNLOCK"
+                    bleManager.enqueuePacket(cmd)
+                    _telemetry.value = _telemetry.value.copy(
+                        latestAlertText = if (isLocked) "Doors Locked" else "Doors Unlocked"
+                    )
+                }
+                CarKeyEvent.DOUBLE_CLICK -> {
+                    bleManager.enqueuePacket("CMD:BUZZER:ALERT")
+                    _telemetry.value = _telemetry.value.copy(
+                        latestAlertText = "Car Key Panic / Buzzer"
+                    )
+                }
             }
         }
 
@@ -222,6 +245,17 @@ class LunetApp : Application() {
                     else -> DriveMode.COMFORT
                 }
                 _telemetry.value = _telemetry.value.copy(mode = mode)
+            }
+            pkt == "EVT:LOCK:LOCKED" -> {
+                carKeyManager.setCarLockedFromCluster(true)
+                _telemetry.value = _telemetry.value.copy(latestAlertText = "Doors Locked")
+            }
+            pkt == "EVT:LOCK:UNLOCKED" -> {
+                carKeyManager.setCarLockedFromCluster(false)
+                _telemetry.value = _telemetry.value.copy(latestAlertText = "Doors Unlocked")
+            }
+            pkt == "EVT:BUZZER:ALERT" -> {
+                carKeyManager.triggerBuzzer()
             }
         }
     }
